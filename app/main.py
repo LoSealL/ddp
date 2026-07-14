@@ -15,6 +15,7 @@ from .executor import MockExecutor, UPLOAD_DIR, LOG_DIR
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+DIST_DIR = FRONTEND_DIR / "dist"
 
 storage = Storage(DATA_DIR / "mock-s3")
 executor = MockExecutor(storage)
@@ -47,6 +48,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="DDP", lifespan=lifespan)
 app.mount("/s3", StaticFiles(directory=str(DATA_DIR / "mock-s3")), name="s3")
+_assets = DIST_DIR / "assets"
+if _assets.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
 
 
 # ── Auth ─────────────────────────────────────────────
@@ -190,4 +194,7 @@ async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+    index_html = DIST_DIR / "index.html"
+    if index_html.exists():
+        return index_html.read_text(encoding="utf-8")
+    return "<h1>Frontend not built</h1><p>Run <code>cd frontend && bun install && bun run build</code></p>"
