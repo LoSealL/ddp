@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-from . import db, auth
+from . import db, auth, admin
 from .storage import Storage
 from .executor import MockExecutor, UPLOAD_DIR
 
@@ -42,12 +42,15 @@ async def lifespan(app: FastAPI):
                 executor.execute, trigger, args=[job["id"]], id=job["id"],
                 replace_existing=True,
             )
-    scheduler.start()
+    if not scheduler.running:
+        scheduler.start()
     yield
-    scheduler.shutdown(wait=False)
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="DDP", lifespan=lifespan)
+app.include_router(admin.router)
 _assets = DIST_DIR / "assets"
 if _assets.is_dir():
     app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
@@ -66,6 +69,7 @@ async def register(username: str = Form(...), password: str = Form(...)):
         raise HTTPException(409, "Username already taken")
     pw_hash, salt = auth.hash_password(password)
     user_id = db.create_user(username, pw_hash, salt)
+    db.log_event("INFO", "auth", f"User {username} registered", user_id=user_id)
     token = auth.create_session_for_user(user_id)
     resp = _set_cookie(token)
     resp = _json_response({"ok": True, "username": username}, token)
