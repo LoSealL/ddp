@@ -37,9 +37,11 @@ async def lifespan(app: FastAPI):
             )
     if not scheduler.running:
         scheduler.start()
-    yield
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
+    try:
+        yield
+    finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="DDP", lifespan=lifespan)
