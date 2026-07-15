@@ -68,6 +68,24 @@ const I18N: Record<Lang, Record<string, string>> = {
     st_pending: "pending", st_running: "running", st_done: "done",
     st_failed: "failed", st_timeout: "timeout", st_cancelled: "cancelled",
     langLabel: "中文",
+    queued: "Job queued — it will run in the next allowed time window.",
+    admin: "Admin", adminUsers: "Users", adminParams: "Parameters",
+    adminLogs: "Logs", adminMonitor: "Monitoring",
+    gpuQuota: "GPU Quota", storageQuota: "Storage (GB)",
+    save: "Save", delete: "Delete",
+    created: "Created", isAdmin: "Admin",
+    timeWindow: "Allowed Running Window",
+    timeWindowStart: "Start Time", timeWindowEnd: "End Time",
+    timeWindowRepeat: "Repeat", gpuDefaultQuota: "Default GPU Quota",
+    storageDefaultQuota: "Default Storage (GB)", gpuDevices: "GPU Devices (JSON)",
+    paramsSaved: "Parameters saved.", paramsError: "Failed to save parameters.",
+    level: "Level", category: "Category", timestamp: "Time", message: "Message",
+    allLevels: "All Levels", allCategories: "All Categories",
+    prev: "Prev", next: "Next", page: "Page",
+    totalJobs: "Total Jobs", gpuStatus: "GPU Status", s3Storage: "S3 Storage",
+    bucket: "Bucket", objects: "Objects", totalSize: "Total Size",
+    memoryUsed: "Memory", coresUsed: "Cores",
+    backToJobs: "Back to Jobs",
   },
   zh: {
     tagline: "延迟调度平台",
@@ -100,6 +118,24 @@ const I18N: Record<Lang, Record<string, string>> = {
     st_pending: "等待中", st_running: "运行中", st_done: "已完成",
     st_failed: "失败", st_timeout: "超时", st_cancelled: "已取消",
     langLabel: "EN",
+    queued: "作业已排队 — 将在下一个允许的时间窗口内运行。",
+    admin: "管理", adminUsers: "用户", adminParams: "参数",
+    adminLogs: "日志", adminMonitor: "监控",
+    gpuQuota: "GPU 配额", storageQuota: "存储 (GB)",
+    save: "保存", delete: "删除",
+    created: "创建时间", isAdmin: "管理员",
+    timeWindow: "允许运行时间段",
+    timeWindowStart: "开始时间", timeWindowEnd: "结束时间",
+    timeWindowRepeat: "重复", gpuDefaultQuota: "默认 GPU 配额",
+    storageDefaultQuota: "默认存储 (GB)", gpuDevices: "GPU 设备 (JSON)",
+    paramsSaved: "参数已保存。", paramsError: "保存参数失败。",
+    level: "级别", category: "类别", timestamp: "时间", message: "消息",
+    allLevels: "所有级别", allCategories: "所有类别",
+    prev: "上一页", next: "下一页", page: "页码",
+    totalJobs: "作业总数", gpuStatus: "GPU 状态", s3Storage: "S3 存储",
+    bucket: "存储桶", objects: "对象数", totalSize: "总大小",
+    memoryUsed: "显存", coresUsed: "算力",
+    backToJobs: "返回作业",
   },
 };
 
@@ -134,6 +170,13 @@ function toggleLang(): void {
 const API = '/api/jobs';
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 let allJobs: Job[] = [];
+let isAdmin = false;
+let adminViewActive = false;
+let adminTab: 'users' | 'params' | 'logs' | 'monitor' = 'users';
+let logsPage = 0;
+const LOGS_PER_PAGE = 50;
+let logsLevel = '';
+let logsCategory = '';
 
 // ── Auth ─────────────────────────────────────
 function switchAuthTab(tab: 'login' | 'register'): void {
@@ -201,7 +244,8 @@ async function checkAuth(): Promise<boolean> {
   try {
     const resp = await fetch('/api/auth/me');
     if (resp.ok) {
-      const user: { id: number; username: string } = await resp.json();
+      const user: { id: number; username: string; is_admin: number } = await resp.json();
+      isAdmin = !!user.is_admin;
       showAppView(user.username);
       return true;
     }
@@ -214,6 +258,8 @@ function showAppView(username: string): void {
   $('auth-view').style.display = 'none';
   $('app-view').style.display = '';
   $('nav-username').textContent = username;
+  const adminBtn = $('btn-admin');
+  if (adminBtn) adminBtn.style.display = isAdmin ? '' : 'none';
   setDefaultTime();
   refreshJobs();
   if (refreshTimer) clearInterval(refreshTimer);
@@ -224,6 +270,225 @@ function showAuthView(): void {
   $('auth-view').style.display = '';
   $('app-view').style.display = 'none';
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
+
+// ── Admin panel ──────────────────────────────
+function toggleAdminView(): void {
+  adminViewActive = !adminViewActive;
+  const layout = document.querySelector('.layout') as HTMLElement;
+  const adminView = $('admin-view');
+  const adminBtn = $('btn-admin');
+  if (adminViewActive) {
+    if (layout) layout.style.display = 'none';
+    adminView.style.display = '';
+    adminBtn.textContent = t('backToJobs');
+    switchAdminTab(adminTab);
+  } else {
+    if (layout) layout.style.display = '';
+    adminView.style.display = 'none';
+    adminBtn.textContent = t('admin');
+  }
+}
+
+function switchAdminTab(tab: 'users' | 'params' | 'logs' | 'monitor'): void {
+  adminTab = tab;
+  document.querySelectorAll('.admin-tab').forEach(el => el.classList.remove('active'));
+  const tabBtn = $(`admin-tab-${tab}`);
+  if (tabBtn) tabBtn.classList.add('active');
+  if (tab === 'users') renderAdminUsers();
+  if (tab === 'params') renderAdminParams();
+  if (tab === 'logs') renderAdminLogs();
+  if (tab === 'monitor') renderAdminMonitor();
+}
+
+async function renderAdminUsers(): Promise<void> {
+  const content = $('admin-content');
+  content.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+  const resp = await fetch('/api/admin/users');
+  if (!resp.ok) { content.innerHTML = '<div class="empty">Error loading users</div>'; return; }
+  const users: any[] = await resp.json();
+  content.innerHTML = `
+    <table class="users-table">
+      <thead><tr>
+        <th>ID</th><th>${t('username')}</th><th>${t('isAdmin')}</th>
+        <th>${t('gpuQuota')}</th><th>${t('storageQuota')}</th>
+        <th>${t('created')}</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${users.map(u => `
+          <tr data-uid="${u.id}">
+            <td>${u.id}</td>
+            <td>${escapeHtml(u.username)}</td>
+            <td><input type="checkbox" class="u-admin" ${u.is_admin ? 'checked' : ''} /></td>
+            <td><input type="number" class="u-gpu" value="${u.gpu_quota_override ?? ''}" placeholder="default" min="0" /></td>
+            <td><input type="number" class="u-storage" value="${u.storage_quota_override_gb ?? ''}" placeholder="default" min="0" step="0.5" /></td>
+            <td>${u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</td>
+            <td>
+              <button class="btn-save" data-save-uid="${u.id}">${t('save')}</button>
+              <button class="btn-delete-user" data-del-uid="${u.id}">${t('delete')}</button>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+async function renderAdminParams(): Promise<void> {
+  const content = $('admin-content');
+  content.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+  const resp = await fetch('/api/admin/params');
+  if (!resp.ok) { content.innerHTML = '<div class="empty">Error loading params</div>'; return; }
+  const p: any = await resp.json();
+  content.innerHTML = `
+    <form class="params-form" id="params-form">
+      <h2 class="admin-section-title">${t('timeWindow')}</h2>
+      <div class="field-row">
+        <div class="field">
+          <label>${t('timeWindowStart')}</label>
+          <input type="time" name="time_window_start" value="${p.time_window_start}" />
+        </div>
+        <div class="field">
+          <label>${t('timeWindowEnd')}</label>
+          <input type="time" name="time_window_end" value="${p.time_window_end}" />
+        </div>
+      </div>
+      <div class="field">
+        <label>${t('timeWindowRepeat')}</label>
+        <select name="time_window_repeat">
+          <option value="daily" ${p.time_window_repeat === 'daily' ? 'selected' : ''}>Daily</option>
+          <option value="weekdays" ${p.time_window_repeat === 'weekdays' ? 'selected' : ''}>Weekdays</option>
+          <option value="weekly" ${p.time_window_repeat === 'weekly' ? 'selected' : ''}>Weekly</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>${t('gpuDefaultQuota')}</label>
+          <input type="number" name="gpu_default_quota" value="${p.gpu_default_quota}" min="0" />
+        </div>
+        <div class="field">
+          <label>${t('storageDefaultQuota')}</label>
+          <input type="number" name="storage_default_quota_gb" value="${p.storage_default_quota_gb}" min="0" step="0.5" />
+        </div>
+      </div>
+      <div class="field">
+        <label>${t('gpuDevices')}</label>
+        <textarea name="gpu_devices">${JSON.stringify(p.gpu_devices, null, 2)}</textarea>
+      </div>
+      <button type="submit" class="btn-submit">${t('save')}</button>
+      <div id="params-status" style="margin-top:8px;"></div>
+    </form>`;
+}
+
+async function renderAdminLogs(): Promise<void> {
+  const content = $('admin-content');
+  const params = new URLSearchParams();
+  if (logsLevel) params.set('level', logsLevel);
+  if (logsCategory) params.set('category', logsCategory);
+  params.set('limit', String(LOGS_PER_PAGE));
+  params.set('offset', String(logsPage * LOGS_PER_PAGE));
+  const resp = await fetch(`/api/admin/logs?${params}`);
+  if (!resp.ok) { content.innerHTML = '<div class="empty">Error loading logs</div>'; return; }
+  const data: { logs: any[]; total: number } = await resp.json();
+  const totalPages = Math.max(1, Math.ceil(data.total / LOGS_PER_PAGE));
+  content.innerHTML = `
+    <div class="logs-filters">
+      <select id="logs-level-filter">
+        <option value="">${t('allLevels')}</option>
+        <option value="INFO" ${logsLevel === 'INFO' ? 'selected' : ''}>INFO</option>
+        <option value="WARNING" ${logsLevel === 'WARNING' ? 'selected' : ''}>WARNING</option>
+        <option value="ERROR" ${logsLevel === 'ERROR' ? 'selected' : ''}>ERROR</option>
+        <option value="DEBUG" ${logsLevel === 'DEBUG' ? 'selected' : ''}>DEBUG</option>
+      </select>
+      <select id="logs-category-filter">
+        <option value="">${t('allCategories')}</option>
+        <option value="auth" ${logsCategory === 'auth' ? 'selected' : ''}>auth</option>
+        <option value="job" ${logsCategory === 'job' ? 'selected' : ''}>job</option>
+        <option value="admin" ${logsCategory === 'admin' ? 'selected' : ''}>admin</option>
+        <option value="system" ${logsCategory === 'system' ? 'selected' : ''}>system</option>
+      </select>
+    </div>
+    <table class="logs-table">
+      <thead><tr>
+        <th>${t('timestamp')}</th><th>${t('level')}</th><th>${t('category')}</th><th>${t('message')}</th>
+      </tr></thead>
+      <tbody>
+        ${data.logs.length ? data.logs.map(l => `
+          <tr>
+            <td>${new Date(l.timestamp).toLocaleString()}</td>
+            <td class="log-level-${l.level}">${l.level}</td>
+            <td>${l.category}</td>
+            <td>${escapeHtml(l.message)}</td>
+          </tr>`).join('') : `<tr><td colspan="4" style="text-align:center;color:var(--text-dim)">No logs</td></tr>`}
+      </tbody>
+    </table>
+    <div class="logs-pagination">
+      <button id="logs-prev" ${logsPage === 0 ? 'disabled' : ''}>${t('prev')}</button>
+      <span>${t('page')} ${logsPage + 1} / ${totalPages}</span>
+      <button id="logs-next" ${data.logs.length < LOGS_PER_PAGE ? 'disabled' : ''}>${t('next')}</button>
+    </div>`;
+
+  const levelFilter = document.getElementById('logs-level-filter') as HTMLSelectElement | null;
+  if (levelFilter) levelFilter.addEventListener('change', e => {
+    logsLevel = (e.target as HTMLSelectElement).value; logsPage = 0; renderAdminLogs();
+  });
+  const catFilter = document.getElementById('logs-category-filter') as HTMLSelectElement | null;
+  if (catFilter) catFilter.addEventListener('change', e => {
+    logsCategory = (e.target as HTMLSelectElement).value; logsPage = 0; renderAdminLogs();
+  });
+  const prevBtn = document.getElementById('logs-prev') as HTMLButtonElement | null;
+  if (prevBtn && !prevBtn.disabled) prevBtn.addEventListener('click', () => {
+    if (logsPage > 0) { logsPage--; renderAdminLogs(); }
+  });
+  const nextBtn = document.getElementById('logs-next') as HTMLButtonElement | null;
+  if (nextBtn && !nextBtn.disabled) nextBtn.addEventListener('click', () => {
+    logsPage++; renderAdminLogs();
+  });
+}
+
+async function renderAdminMonitor(): Promise<void> {
+  const content = $('admin-content');
+  content.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+  const resp = await fetch('/api/admin/monitoring');
+  if (!resp.ok) { content.innerHTML = '<div class="empty">Error loading monitoring data</div>'; return; }
+  const data: {
+    jobs: Record<string, number>;
+    gpus: any[];
+    s3: { bucket: string; endpoint: string; object_count: number; total_size_bytes: number };
+  } = await resp.json();
+
+  const totalJobs = Object.values(data.jobs).reduce((a, b) => a + b, 0);
+  const statusColors: Record<string, string> = {
+    done: 'var(--green)', failed: 'var(--red)', running: 'var(--blue)',
+    timeout: 'var(--orange)', pending: 'var(--orange)', cancelled: 'var(--gray)',
+  };
+  content.innerHTML = `
+    <h2 class="admin-section-title">${t('totalJobs')} (${totalJobs})</h2>
+    <div class="monitor-grid">
+      ${Object.entries(data.jobs).map(([status, count]) => `
+        <div class="monitor-card">
+          <div class="label">${statusLabel(status)}</div>
+          <div class="value" style="color: ${statusColors[status] || 'var(--text)'}">${count}</div>
+        </div>`).join('')}
+    </div>
+    <h2 class="admin-section-title">${t('gpuStatus')}</h2>
+    ${data.gpus.length ? data.gpus.map((g: any) => {
+      const memPct = g.memory_total_mb > 0 ? (g.memory_used_mb / g.memory_total_mb * 100) : 0;
+      const corePct = g.cores_total > 0 ? (g.cores_used / g.cores_total * 100) : 0;
+      return `
+        <div class="gpu-card">
+          <div class="gpu-name">${escapeHtml(g.name)} (id: ${g.id})</div>
+          <div>${t('memoryUsed')}: ${g.memory_used_mb}/${g.memory_total_mb} MB</div>
+          <div class="gpu-bar"><div class="gpu-bar-fill" style="width:${memPct}%"></div></div>
+          <div style="margin-top:8px">${t('coresUsed')}: ${g.cores_used}/${g.cores_total}</div>
+          <div class="gpu-bar"><div class="gpu-bar-fill" style="width:${corePct}%"></div></div>
+        </div>`;
+    }).join('') : '<div class="empty">No GPU devices configured</div>'}
+    <h2 class="admin-section-title">${t('s3Storage')}</h2>
+    <div class="s3-card">
+      <div class="kv-row"><span class="k">${t('bucket')}</span><span class="v">${escapeHtml(data.s3.bucket)}</span></div>
+      <div class="kv-row"><span class="k">Endpoint</span><span class="v">${escapeHtml(data.s3.endpoint)}</span></div>
+      <div class="kv-row"><span class="k">${t('objects')}</span><span class="v">${data.s3.object_count}</span></div>
+      <div class="kv-row"><span class="k">${t('totalSize')}</span><span class="v">${formatSize(data.s3.total_size_bytes)}</span></div>
+    </div>`;
 }
 
 // ── File upload ──────────────────────────────
@@ -271,6 +536,8 @@ async function submitJob(e: SubmitEvent): Promise<void> {
       alert(t('error') + ': ' + (err.detail || t('unknown')));
       return;
     }
+    const result = await resp.json().catch(() => ({} as { queued?: boolean }));
+    if (result.queued) alert(t('queued'));
     form.reset();
     setDefaultTime();
     $('file-display').textContent = '';
@@ -450,6 +717,67 @@ document.addEventListener('DOMContentLoaded', () => {
       const a = document.createElement('a');
       a.href = `${API}/${btn.dataset.logDownload}/logs/download`;
       a.click();
+    }
+  });
+
+  // Admin panel handlers
+  $('btn-admin').addEventListener('click', toggleAdminView);
+  $('admin-tab-users').addEventListener('click', () => switchAdminTab('users'));
+  $('admin-tab-params').addEventListener('click', () => switchAdminTab('params'));
+  $('admin-tab-logs').addEventListener('click', () => switchAdminTab('logs'));
+  $('admin-tab-monitor').addEventListener('click', () => switchAdminTab('monitor'));
+
+  $('admin-content').addEventListener('click', async (e) => {
+    const target = e.target as HTMLElement;
+    const saveBtn = target.closest('[data-save-uid]') as HTMLElement | null;
+    if (saveBtn) {
+      const uid = saveBtn.dataset.saveUid!;
+      const row = target.closest('tr') as HTMLTableRowElement;
+      const isAdm = (row.querySelector('.u-admin') as HTMLInputElement).checked ? 1 : 0;
+      const gpuVal = (row.querySelector('.u-gpu') as HTMLInputElement).value;
+      const storageVal = (row.querySelector('.u-storage') as HTMLInputElement).value;
+      const body: any = { is_admin: isAdm };
+      body.gpu_quota_override = gpuVal === '' ? null : parseInt(gpuVal);
+      body.storage_quota_override_gb = storageVal === '' ? null : parseFloat(storageVal);
+      const r = await fetch(`/api/admin/users/${uid}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      if (r.ok) renderAdminUsers();
+      else { const err = await r.json().catch(() => ({})); alert(err.detail || 'Failed'); }
+    }
+    const delBtn = target.closest('[data-del-uid]') as HTMLElement | null;
+    if (delBtn) {
+      if (!confirm(t('delete') + '?')) return;
+      const uid = delBtn.dataset.delUid!;
+      const r = await fetch(`/api/admin/users/${uid}`, { method: 'DELETE' });
+      if (r.ok) renderAdminUsers();
+      else { const err = await r.json().catch(() => ({})); alert(err.detail || 'Failed'); }
+    }
+  });
+
+  $('admin-content').addEventListener('submit', async (e) => {
+    const form = e.target as HTMLFormElement;
+    if (form.id !== 'params-form') return;
+    e.preventDefault();
+    const fd = new FormData(form);
+    const body: any = {};
+    body.time_window_start = fd.get('time_window_start');
+    body.time_window_end = fd.get('time_window_end');
+    body.time_window_repeat = fd.get('time_window_repeat');
+    body.gpu_default_quota = parseInt(fd.get('gpu_default_quota') as string);
+    body.storage_default_quota_gb = parseFloat(fd.get('storage_default_quota_gb') as string);
+    try { body.gpu_devices = JSON.parse(fd.get('gpu_devices') as string); }
+    catch {
+      const st = $('params-status'); if (st) { st.textContent = 'Invalid GPU devices JSON'; st.style.color = 'var(--red)'; }
+      return;
+    }
+    const r = await fetch('/api/admin/params', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const st = $('params-status');
+    if (st) {
+      if (r.ok) { st.textContent = t('paramsSaved'); st.style.color = 'var(--green)'; }
+      else { const err = await r.json().catch(() => ({})); st.textContent = err.detail || t('paramsError'); st.style.color = 'var(--red)'; }
     }
   });
 

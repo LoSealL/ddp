@@ -50,6 +50,7 @@
     <span style="color: var(--text-dim); font-size: 13px;" data-i18n="tagline">Delayed Dispatch Platform</span>
     <span class="badge-mock">MOCK MODE</span>
     <div class="spacer"></div>
+    <button class="btn-admin" id="btn-admin" style="display:none" data-i18n="admin">Admin</button>
     <div class="user-area">
       <button class="btn-lang" id="lang-toggle-app">中文</button>
       <span class="username"><span data-i18n="signedInAs">Signed in as</span> <strong id="nav-username">—</strong></span>
@@ -71,8 +72,17 @@
             <div class="label" data-i18n="dropzoneHint">Click or drag a .zip here</div>
             <div class="filename" id="file-display"></div>
             <input type="file" id="file-input" name="file" accept=".zip" required />
-          </div>
-        </div>
+  </div>
+    <div id="admin-view" style="display:none">
+      <div class="admin-tabs">
+        <button class="admin-tab active" id="admin-tab-users" data-i18n="adminUsers">Users</button>
+        <button class="admin-tab" id="admin-tab-params" data-i18n="adminParams">Parameters</button>
+        <button class="admin-tab" id="admin-tab-logs" data-i18n="adminLogs">Logs</button>
+        <button class="admin-tab" id="admin-tab-monitor" data-i18n="adminMonitor">Monitoring</button>
+      </div>
+      <div id="admin-content" class="admin-content"></div>
+    </div>
+</div>
         <div class="field">
           <label data-i18n="entryCommand">Entry Command</label>
           <input type="text" name="entry_command" value="python main.py" />

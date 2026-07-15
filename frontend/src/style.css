@@ -259,3 +259,103 @@ header .user-area .username strong { color: var(--text); }
 }
 .search-bar select:focus { outline: none; border-color: var(--accent); }
 .search-bar select option { background: var(--card); }
+
+/* Admin panel */
+.btn-admin {
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 6px; padding: 5px 14px; font-size: 12px; cursor: pointer;
+  transition: all .15s; font-weight: 600;
+}
+.btn-admin:hover { background: var(--accent-hi); }
+
+.admin-tabs {
+  display: flex; gap: 4px; padding: 16px 32px; background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+.admin-tab {
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: 6px; padding: 8px 20px; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all .15s;
+}
+.admin-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.admin-content { padding: 24px 32px; }
+
+/* Users table */
+.users-table { width: 100%; border-collapse: collapse; }
+.users-table th, .users-table td {
+  padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border);
+}
+.users-table th { color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+.users-table td { font-size: 14px; }
+.users-table input {
+  background: var(--card); border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 8px; color: var(--text); font-size: 13px; width: 70px;
+}
+.users-table .btn-save {
+  background: var(--accent); color: #fff; border: none; border-radius: 4px;
+  padding: 4px 10px; cursor: pointer; font-size: 12px;
+}
+.users-table .btn-delete-user {
+  background: rgba(239,68,68,.15); color: var(--red); border: 1px solid rgba(239,68,68,.3);
+  border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 12px;
+}
+
+/* Params form */
+.params-form { max-width: 600px; }
+.params-form .field input, .params-form .field select {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; color: var(--text); font-size: 14px; width: 100%;
+}
+.params-form textarea {
+  width: 100%; min-height: 120px; background: var(--card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; color: var(--text); font-size: 13px;
+  font-family: 'Consolas', monospace; resize: vertical;
+}
+
+/* Logs table */
+.logs-table { width: 100%; border-collapse: collapse; }
+.logs-table th, .logs-table td {
+  padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.logs-table th { color: var(--text-dim); font-size: 11px; text-transform: uppercase; }
+.log-level-INFO { color: var(--blue); }
+.log-level-WARNING { color: var(--orange); }
+.log-level-ERROR { color: var(--red); }
+.log-level-DEBUG { color: var(--text-dim); }
+.logs-filters { display: flex; gap: 12px; margin-bottom: 16px; }
+.logs-filters select {
+  background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 12px; color: var(--text); font-size: 13px;
+}
+.logs-pagination { display: flex; gap: 8px; margin-top: 16px; align-items: center; }
+.logs-pagination button {
+  background: var(--card); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 13px;
+}
+.logs-pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Monitoring */
+.monitor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.monitor-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 20px; text-align: center;
+}
+.monitor-card .label { color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+.monitor-card .value { font-size: 32px; font-weight: 700; margin-top: 8px; }
+.gpu-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 20px; margin-bottom: 12px;
+}
+.gpu-card .gpu-name { font-weight: 600; font-size: 15px; margin-bottom: 12px; }
+.gpu-bar { height: 6px; background: var(--bg); border-radius: 3px; margin-top: 4px; overflow: hidden; }
+.gpu-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.s3-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 20px;
+}
+.s3-card .kv-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.s3-card .kv-row:last-child { border-bottom: none; }
+.s3-card .kv-row .k { color: var(--text-dim); font-size: 13px; }
+.s3-card .kv-row .v { font-size: 14px; }
+.admin-section-title { font-size: 15px; margin: 24px 0 16px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
