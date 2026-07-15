@@ -102,7 +102,7 @@ async def logout(session: str | None = Cookie(None)):
 
 @app.get("/api/auth/me")
 async def me(user: dict = Depends(auth.get_current_user)):
-    return {"id": user["id"], "username": user["username"]}
+    return {"id": user["id"], "username": user["username"], "is_admin": user.get("is_admin", 0)}
 
 
 # ── Jobs (protected) ─────────────────────────────────

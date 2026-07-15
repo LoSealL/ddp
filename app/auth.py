@@ -2,7 +2,7 @@ import secrets
 import hashlib
 from datetime import datetime, timezone, timedelta
 
-from fastapi import Cookie, HTTPException
+from fastapi import Cookie, HTTPException, Depends
 
 from . import db
 
@@ -33,4 +33,10 @@ async def get_current_user(session: str | None = Cookie(None)) -> dict:
     user = db.get_user_by_session(session)
     if not user:
         raise HTTPException(401, "Invalid or expired session")
+    return user
+
+
+async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if not user.get("is_admin"):
+        raise HTTPException(403, "Admin access required")
     return user
