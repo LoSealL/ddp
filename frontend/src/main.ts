@@ -270,8 +270,16 @@ function showAppView(username: string): void {
   $('auth-view').style.display = 'none';
   $('app-view').style.display = '';
   $('nav-username').textContent = username;
+  // Reset admin state — always land on the jobs page after login
+  adminViewActive = false;
+  const layout = document.querySelector('.layout') as HTMLElement;
+  if (layout) layout.style.display = '';
+  $('admin-view').style.display = 'none';
   const adminBtn = $('btn-admin');
-  if (adminBtn) adminBtn.style.display = isAdmin ? '' : 'none';
+  if (adminBtn) {
+    adminBtn.style.display = isAdmin ? '' : 'none';
+    adminBtn.textContent = t('admin');
+  }
   setDefaultTime();
   refreshJobs();
   if (refreshTimer) clearInterval(refreshTimer);
