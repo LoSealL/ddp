@@ -79,9 +79,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     timeWindowRepeat: "Repeat", repeatDaily: "Daily", repeatWeekdays: "Weekdays", repeatWeekly: "Weekly",
     gpuDefaultQuota: "Default GPU Quota",
     storageDefaultQuota: "Default Storage (GB)", gpuDevices: "GPU Devices",
-    gpuId: "ID", gpuName: "Name", gpuMemTotal: "Memory Total (MB)",
+    gpuUuid: "UUID", gpuEnabled: "Enabled",
+    gpuMemTotal: "Memory Total (MB)",
     gpuMemUsed: "Memory Used (MB)", gpuCoresTotal: "Cores Total", gpuCoresUsed: "Cores Used",
-    addGpu: "Add GPU", removeGpu: "Remove",
     paramsSaved: "Parameters saved.", paramsError: "Failed to save parameters.",
     level: "Level", category: "Category", timestamp: "Time", message: "Message",
     allLevels: "All Levels", allCategories: "All Categories",
@@ -135,9 +135,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     timeWindowRepeat: "重复", repeatDaily: "每天", repeatWeekdays: "工作日", repeatWeekly: "每周",
     gpuDefaultQuota: "默认 GPU 配额",
     storageDefaultQuota: "默认存储 (GB)", gpuDevices: "GPU 设备",
-    gpuId: "ID", gpuName: "名称", gpuMemTotal: "显存总量 (MB)",
+    gpuUuid: "UUID", gpuEnabled: "启用",
+    gpuMemTotal: "显存总量 (MB)",
     gpuMemUsed: "已用显存 (MB)", gpuCoresTotal: "总算力", gpuCoresUsed: "已用算力",
-    addGpu: "添加 GPU", removeGpu: "删除",
     paramsSaved: "参数已保存。", paramsError: "保存参数失败。",
     level: "级别", category: "类别", timestamp: "时间", message: "消息",
     allLevels: "所有级别", allCategories: "所有类别",
@@ -353,15 +353,15 @@ async function renderAdminUsers(): Promise<void> {
 }
 
 function gpuRowHtml(g: any, index: number): string {
+  const enabled = g.enabled !== false;
   return `
     <tr class="gpu-device-row" data-gpu-index="${index}">
-      <td><input type="number" class="g-id" value="${g.id ?? 0}" min="0" style="width:50px" /></td>
-      <td><input type="text" class="g-name" value="${escapeHtml(g.name ?? '')}" style="width:100px" /></td>
+      <td><input type="checkbox" class="g-enabled" ${enabled ? 'checked' : ''} /></td>
+      <td><code>${escapeHtml(g.name ?? g.uuid ?? '')}</code></td>
       <td><input type="number" class="g-mem-total" value="${g.memory_total_mb ?? 0}" min="0" style="width:90px" /></td>
       <td><input type="number" class="g-mem-used" value="${g.memory_used_mb ?? 0}" min="0" style="width:90px" /></td>
       <td><input type="number" class="g-cores-total" value="${g.cores_total ?? 0}" min="0" style="width:70px" /></td>
       <td><input type="number" class="g-cores-used" value="${g.cores_used ?? 0}" min="0" style="width:70px" /></td>
-      <td><button type="button" class="btn-delete-user" data-remove-gpu="${index}">${t('removeGpu')}</button></td>
     </tr>`;
 }
 
@@ -406,15 +406,14 @@ async function renderAdminParams(): Promise<void> {
         <label>${t('gpuDevices')}</label>
         <table class="users-table" id="gpu-devices-table">
           <thead><tr>
-            <th>${t('gpuId')}</th><th>${t('gpuName')}</th>
+            <th>${t('gpuEnabled')}</th><th>${t('gpuUuid')}</th>
             <th>${t('gpuMemTotal')}</th><th>${t('gpuMemUsed')}</th>
-            <th>${t('gpuCoresTotal')}</th><th>${t('gpuCoresUsed')}</th><th></th>
+            <th>${t('gpuCoresTotal')}</th><th>${t('gpuCoresUsed')}</th>
           </tr></thead>
           <tbody id="gpu-devices-body">
             ${(p.gpu_devices as any[]).map((g, i) => gpuRowHtml(g, i)).join('')}
           </tbody>
         </table>
-        <button type="button" class="btn-save" id="btn-add-gpu" style="margin-top:8px;">+ ${t('addGpu')}</button>
       </div>
       <button type="submit" class="btn-submit">${t('save')}</button>
       <div id="params-status" style="margin-top:8px;"></div>
@@ -796,19 +795,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (r.ok) renderAdminUsers();
       else { const err = await r.json().catch(() => ({})); alert(err.detail || 'Failed'); }
     }
-    // Add GPU device row
-    if (target.id === 'btn-add-gpu' || target.closest('#btn-add-gpu')) {
-      const tbody = document.getElementById('gpu-devices-body');
-      if (tbody) {
-        const newIndex = tbody.querySelectorAll('.gpu-device-row').length;
-        tbody.insertAdjacentHTML('beforeend', gpuRowHtml({id: newIndex, name: 'GPU-' + newIndex, memory_total_mb: 16384, memory_used_mb: 0, cores_total: 100, cores_used: 0}, newIndex));
-      }
-    }
-    // Remove GPU device row
-    const removeGpuBtn = target.closest('[data-remove-gpu]') as HTMLElement | null;
-    if (removeGpuBtn) {
-      removeGpuBtn.closest('.gpu-device-row')?.remove();
-    }
   });
 
   $('admin-content').addEventListener('submit', async (e) => {
@@ -826,9 +812,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const gpuRows = document.querySelectorAll('#gpu-devices-body .gpu-device-row');
     body.gpu_devices = Array.from(gpuRows).map(row => {
       const el = row as HTMLElement;
+      const uuidEl = el.querySelector('code');
       return {
-        id: parseInt((el.querySelector('.g-id') as HTMLInputElement).value) || 0,
-        name: (el.querySelector('.g-name') as HTMLInputElement).value,
+        enabled: (el.querySelector('.g-enabled') as HTMLInputElement).checked,
+        name: uuidEl ? uuidEl.textContent || '' : '',
         memory_total_mb: parseInt((el.querySelector('.g-mem-total') as HTMLInputElement).value) || 0,
         memory_used_mb: parseInt((el.querySelector('.g-mem-used') as HTMLInputElement).value) || 0,
         cores_total: parseInt((el.querySelector('.g-cores-total') as HTMLInputElement).value) || 0,

@@ -94,9 +94,9 @@ def init_db():
         ("gpu_default_quota", "1"),
         ("storage_default_quota_gb", "10.0"),
         ("gpu_devices", json.dumps([
-            {"id": 0, "name": "GPU-0", "memory_total_mb": 16384, "memory_used_mb": 0,
+            {"enabled": True, "name": "GPU-a1b2c3d4-e5f6-7890-abcd-ef1234567890", "memory_total_mb": 16384, "memory_used_mb": 0,
              "cores_total": 100, "cores_used": 0},
-            {"id": 1, "name": "GPU-1", "memory_total_mb": 16384, "memory_used_mb": 0,
+            {"enabled": True, "name": "GPU-b2c3d4e5-f6a7-8901-bcde-f23456789012", "memory_total_mb": 16384, "memory_used_mb": 0,
              "cores_total": 100, "cores_used": 0},
         ])),
     ]
