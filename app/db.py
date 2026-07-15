@@ -224,7 +224,13 @@ def list_users():
     return [dict(r) for r in rows]
 
 
+_ALLOWED_USER_COLS = {"is_admin", "gpu_quota_override", "storage_quota_override_gb"}
+
+
 def update_user(user_id, **kwargs):
+    bad = set(kwargs) - _ALLOWED_USER_COLS
+    if bad:
+        raise ValueError(f"Cannot update columns: {bad}")
     conn = get_db()
     sets = ", ".join(f"{k} = ?" for k in kwargs)
     values = list(kwargs.values()) + [user_id]
