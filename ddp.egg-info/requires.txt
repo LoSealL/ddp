@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+apscheduler>=3.10.0
+python-multipart>=0.0.9
+boto3>=1.35.0
+minio>=7.2.20
+
+[test]
+pytest>=8.0

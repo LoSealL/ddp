@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-from . import db, auth, admin
+from . import db, auth, admin, timecheck
 from .storage import Storage
 from .executor import MockExecutor, UPLOAD_DIR
 
@@ -90,7 +90,9 @@ def _set_cookie(token: str):
 async def login(username: str = Form(...), password: str = Form(...)):
     user = db.get_user_by_username(username)
     if not user or not auth.verify_password(password, user["password_hash"], user["salt"]):
+        db.log_event("WARNING", "auth", f"Failed login attempt: {username}")
         raise HTTPException(401, "Invalid username or password")
+    db.log_event("INFO", "auth", f"User logged in: {username}", user_id=user["id"])
     token = auth.create_session_for_user(user["id"])
     return _set_cookie(token)
 
@@ -98,6 +100,9 @@ async def login(username: str = Form(...), password: str = Form(...)):
 @app.post("/api/auth/logout")
 async def logout(session: str | None = Cookie(None)):
     if session:
+        user = db.get_user_by_session(session)
+        if user:
+            db.log_event("INFO", "auth", f"User logged out: {user['username']}", user_id=user["id"])
         db.delete_session(session)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie("session")
@@ -132,16 +137,27 @@ async def create_job(
     # Persist uploaded code to S3
     storage.upload_bytes(f"jobs/{job_id}/code/{file.filename}", content)
 
-    scheduled_utc = _parse_local_to_utc(scheduled_at)
+    # Parse local datetime, check time window, convert to UTC
+    local_dt = datetime.fromisoformat(scheduled_at)
+    adjusted_dt = timecheck.check_scheduled_time(local_dt)
+    was_queued = adjusted_dt != local_dt
+
+    dt_utc = adjusted_dt.astimezone(timezone.utc)
+    scheduled_utc = dt_utc.isoformat()
+
     db.create_job(job_id, user["id"], name, file.filename, entry_command, scheduled_utc, timeout_minutes)
 
-    dt = datetime.fromisoformat(scheduled_utc)
+    db.log_event("INFO", "job", f"Job submitted: {name} ({job_id})", user_id=user["id"])
+    if was_queued:
+        db.log_event("INFO", "job", f"Job queued until window: {name} -> {adjusted_dt.isoformat()}",
+                     user_id=user["id"])
+
     scheduler.add_job(
-        executor.execute, DateTrigger(run_date=dt),
+        executor.execute, DateTrigger(run_date=dt_utc),
         args=[job_id], id=job_id, replace_existing=True,
     )
 
-    return {"id": job_id, "status": "pending"}
+    return {"id": job_id, "status": "pending", "queued": was_queued}
 
 
 @app.get("/api/jobs")
@@ -225,11 +241,13 @@ async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
         except Exception:
             pass
         db.update_job(job_id, status="cancelled")
+        db.log_event("INFO", "job", f"Job cancelled: {job_id}", user_id=user["id"])
     elif job["status"] in ("running",):
         raise HTTPException(409, "Cannot cancel a running job in mock mode")
     else:
         storage.delete_prefix(f"jobs/{job_id}/")
         db.delete_job(job_id)
+        db.log_event("INFO", "job", f"Job deleted: {job_id}", user_id=user["id"])
     return {"ok": True}
 
 

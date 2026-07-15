@@ -38,6 +38,7 @@ class MockExecutor:
 
         db.update_job(job_id, status="running",
                       started_at=datetime.now(timezone.utc).isoformat())
+        db.log_event("DEBUG", "system", f"Job started: {job_id}")
 
         work_dir = WORKSPACE_DIR / job_id
 
@@ -107,6 +108,7 @@ class MockExecutor:
                 output_count=output_count,
                 s3_prefix=f"{BUCKET}/jobs/{job_id}/",
             )
+            db.log_event("DEBUG", "system", f"Job finished: {job_id} status={status}")
 
         except Exception as e:
             db.update_job(
@@ -115,6 +117,7 @@ class MockExecutor:
                 finished_at=datetime.now(timezone.utc).isoformat(),
                 error=str(e),
             )
+            db.log_event("ERROR", "system", f"Job failed: {job_id} error={e}")
             shutil.rmtree(str(work_dir), ignore_errors=True)
 
     def _flatten_single_toplevel(self, work_dir: Path):
