@@ -244,7 +244,6 @@ class TestMonitoring:
 
 class TestTimeWindowEnforcement:
     def test_job_outside_window_gets_queued(self, admin_client, make_zip):
-        from app import db
         admin_client.put("/api/admin/params", json={
             "time_window_start": "09:00", "time_window_end": "17:00", "time_window_repeat": "daily"
         })
@@ -252,11 +251,7 @@ class TestTimeWindowEnforcement:
         resp = admin_client.post("/api/jobs", data={"name": "night job", "scheduled_at": "2099-01-01T22:00"},
                                  files={"file": ("p.zip", io.BytesIO(zip_bytes), "application/zip")})
         assert resp.status_code == 200
-        job_id = resp.json()["id"]
-        job = admin_client.get(f"/api/jobs/{job_id}").json()
-        from datetime import datetime
-        adjusted = datetime.fromisoformat(job["scheduled_at"])
-        assert adjusted.hour != 22 or adjusted.hour == 9
+        assert resp.json()["queued"] is True
 
     def test_job_inside_window_normal(self, admin_client, make_zip):
         admin_client.put("/api/admin/params", json={
@@ -266,8 +261,4 @@ class TestTimeWindowEnforcement:
         resp = admin_client.post("/api/jobs", data={"name": "anytime", "scheduled_at": "2099-06-15T12:00"},
                                  files={"file": ("p.zip", io.BytesIO(zip_bytes), "application/zip")})
         assert resp.status_code == 200
-        job_id = resp.json()["id"]
-        job = admin_client.get(f"/api/jobs/{job_id}").json()
-        from datetime import datetime
-        original = datetime.fromisoformat(job["scheduled_at"])
-        assert original.year == 2099
+        assert resp.json()["queued"] is False

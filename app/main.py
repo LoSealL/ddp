@@ -23,13 +23,6 @@ executor = MockExecutor(storage)
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 
-def _parse_local_to_utc(dt_str: str) -> str:
-    """HTML datetime-local gives naive local time -> convert to UTC ISO."""
-    dt = datetime.fromisoformat(dt_str)
-    dt_utc = dt.astimezone().astimezone(timezone.utc)
-    return dt_utc.isoformat()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
