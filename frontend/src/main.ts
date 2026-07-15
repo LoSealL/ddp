@@ -76,7 +76,8 @@ const I18N: Record<Lang, Record<string, string>> = {
     created: "Created", isAdmin: "Admin",
     timeWindow: "Allowed Running Window",
     timeWindowStart: "Start Time", timeWindowEnd: "End Time",
-    timeWindowRepeat: "Repeat", gpuDefaultQuota: "Default GPU Quota",
+    timeWindowRepeat: "Repeat", repeatDaily: "Daily", repeatWeekdays: "Weekdays", repeatWeekly: "Weekly",
+    gpuDefaultQuota: "Default GPU Quota",
     storageDefaultQuota: "Default Storage (GB)", gpuDevices: "GPU Devices (JSON)",
     paramsSaved: "Parameters saved.", paramsError: "Failed to save parameters.",
     level: "Level", category: "Category", timestamp: "Time", message: "Message",
@@ -86,6 +87,8 @@ const I18N: Record<Lang, Record<string, string>> = {
     bucket: "Bucket", objects: "Objects", totalSize: "Total Size",
     memoryUsed: "Memory", coresUsed: "Cores",
     backToJobs: "Back to Jobs",
+    endpoint: "Endpoint", noLogsAdmin: "No logs", noGpus: "No GPU devices configured",
+    errorLoading: "Error loading data",
   },
   zh: {
     tagline: "延迟调度平台",
@@ -126,7 +129,8 @@ const I18N: Record<Lang, Record<string, string>> = {
     created: "创建时间", isAdmin: "管理员",
     timeWindow: "允许运行时间段",
     timeWindowStart: "开始时间", timeWindowEnd: "结束时间",
-    timeWindowRepeat: "重复", gpuDefaultQuota: "默认 GPU 配额",
+    timeWindowRepeat: "重复", repeatDaily: "每天", repeatWeekdays: "工作日", repeatWeekly: "每周",
+    gpuDefaultQuota: "默认 GPU 配额",
     storageDefaultQuota: "默认存储 (GB)", gpuDevices: "GPU 设备 (JSON)",
     paramsSaved: "参数已保存。", paramsError: "保存参数失败。",
     level: "级别", category: "类别", timestamp: "时间", message: "消息",
@@ -136,6 +140,8 @@ const I18N: Record<Lang, Record<string, string>> = {
     bucket: "存储桶", objects: "对象数", totalSize: "总大小",
     memoryUsed: "显存", coresUsed: "算力",
     backToJobs: "返回作业",
+    endpoint: "端点", noLogsAdmin: "暂无日志", noGpus: "未配置 GPU 设备",
+    errorLoading: "加载失败",
   },
 };
 
@@ -305,7 +311,7 @@ async function renderAdminUsers(): Promise<void> {
   const content = $('admin-content');
   content.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
   const resp = await fetch('/api/admin/users');
-  if (!resp.ok) { content.innerHTML = '<div class="empty">Error loading users</div>'; return; }
+  if (!resp.ok) { content.innerHTML = `<div class="empty">${t('errorLoading')}</div>`; return; }
   const users: any[] = await resp.json();
   content.innerHTML = `
     <table class="users-table">
@@ -336,7 +342,7 @@ async function renderAdminParams(): Promise<void> {
   const content = $('admin-content');
   content.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
   const resp = await fetch('/api/admin/params');
-  if (!resp.ok) { content.innerHTML = '<div class="empty">Error loading params</div>'; return; }
+  if (!resp.ok) { content.innerHTML = `<div class="empty">${t('errorLoading')}</div>`; return; }
   const p: any = await resp.json();
   content.innerHTML = `
     <form class="params-form" id="params-form">
@@ -354,9 +360,9 @@ async function renderAdminParams(): Promise<void> {
       <div class="field">
         <label>${t('timeWindowRepeat')}</label>
         <select name="time_window_repeat">
-          <option value="daily" ${p.time_window_repeat === 'daily' ? 'selected' : ''}>Daily</option>
-          <option value="weekdays" ${p.time_window_repeat === 'weekdays' ? 'selected' : ''}>Weekdays</option>
-          <option value="weekly" ${p.time_window_repeat === 'weekly' ? 'selected' : ''}>Weekly</option>
+          <option value="daily" ${p.time_window_repeat === 'daily' ? 'selected' : ''}>${t('repeatDaily')}</option>
+          <option value="weekdays" ${p.time_window_repeat === 'weekdays' ? 'selected' : ''}>${t('repeatWeekdays')}</option>
+          <option value="weekly" ${p.time_window_repeat === 'weekly' ? 'selected' : ''}>${t('repeatWeekly')}</option>
         </select>
       </div>
       <div class="field-row">
@@ -386,7 +392,7 @@ async function renderAdminLogs(): Promise<void> {
   params.set('limit', String(LOGS_PER_PAGE));
   params.set('offset', String(logsPage * LOGS_PER_PAGE));
   const resp = await fetch(`/api/admin/logs?${params}`);
-  if (!resp.ok) { content.innerHTML = '<div class="empty">Error loading logs</div>'; return; }
+  if (!resp.ok) { content.innerHTML = `<div class="empty">${t('errorLoading')}</div>`; return; }
   const data: { logs: any[]; total: number } = await resp.json();
   const totalPages = Math.max(1, Math.ceil(data.total / LOGS_PER_PAGE));
   content.innerHTML = `
@@ -417,7 +423,7 @@ async function renderAdminLogs(): Promise<void> {
             <td class="log-level-${l.level}">${l.level}</td>
             <td>${l.category}</td>
             <td>${escapeHtml(l.message)}</td>
-          </tr>`).join('') : `<tr><td colspan="4" style="text-align:center;color:var(--text-dim)">No logs</td></tr>`}
+          </tr>`).join('') : `<tr><td colspan="4" style="text-align:center;color:var(--text-dim)">${t('noLogsAdmin')}</td></tr>`}
       </tbody>
     </table>
     <div class="logs-pagination">
@@ -448,7 +454,7 @@ async function renderAdminMonitor(): Promise<void> {
   const content = $('admin-content');
   content.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
   const resp = await fetch('/api/admin/monitoring');
-  if (!resp.ok) { content.innerHTML = '<div class="empty">Error loading monitoring data</div>'; return; }
+  if (!resp.ok) { content.innerHTML = `<div class="empty">${t('errorLoading')}</div>`; return; }
   const data: {
     jobs: Record<string, number>;
     gpus: any[];
@@ -481,11 +487,11 @@ async function renderAdminMonitor(): Promise<void> {
           <div style="margin-top:8px">${t('coresUsed')}: ${g.cores_used}/${g.cores_total}</div>
           <div class="gpu-bar"><div class="gpu-bar-fill" style="width:${corePct}%"></div></div>
         </div>`;
-    }).join('') : '<div class="empty">No GPU devices configured</div>'}
+    }).join('') : `<div class="empty">${t('noGpus')}</div>`}
     <h2 class="admin-section-title">${t('s3Storage')}</h2>
     <div class="s3-card">
       <div class="kv-row"><span class="k">${t('bucket')}</span><span class="v">${escapeHtml(data.s3.bucket)}</span></div>
-      <div class="kv-row"><span class="k">Endpoint</span><span class="v">${escapeHtml(data.s3.endpoint)}</span></div>
+      <div class="kv-row"><span class="k">${t('endpoint')}</span><span class="v">${escapeHtml(data.s3.endpoint)}</span></div>
       <div class="kv-row"><span class="k">${t('objects')}</span><span class="v">${data.s3.object_count}</span></div>
       <div class="kv-row"><span class="k">${t('totalSize')}</span><span class="v">${formatSize(data.s3.total_size_bytes)}</span></div>
     </div>`;
