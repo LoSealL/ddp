@@ -2,7 +2,7 @@ import os
 import json
 
 from fastapi import APIRouter, HTTPException, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional
 
 from . import db, auth
@@ -21,6 +21,13 @@ class UserUpdate(BaseModel):
     is_admin: Optional[int] = None
     gpu_quota_override: Optional[int] = None
     storage_quota_override_gb: Optional[float] = None
+
+    @field_validator("is_admin")
+    @classmethod
+    def is_admin_must_be_bool_int(cls, v):
+        if v is not None and v not in (0, 1):
+            raise ValueError("is_admin must be 0 or 1")
+        return v
 
 
 # ── User Management ─────────────────────────────
@@ -43,9 +50,9 @@ async def update_user_endpoint(user_id: int, body: UserUpdate, user: dict = Depe
             updates[field] = val
 
     if "is_admin" in updates:
-        if updates["is_admin"] == 0 and user_id == user["id"]:
+        if not updates["is_admin"] and user_id == user["id"]:
             raise HTTPException(403, "Cannot remove your own admin privileges")
-        if updates["is_admin"] == 0 and db.count_admins() <= 1:
+        if not updates["is_admin"] and db.count_admins() <= 1:
             raise HTTPException(403, "Cannot remove the last admin")
 
     try:
@@ -106,7 +113,7 @@ async def update_params(body: dict, user: dict = Depends(auth.require_admin)):
 # ── System Logs ─────────────────────────────────
 
 @router.get("/logs")
-async def get_logs(
+async def list_admin_logs(
     level: str | None = Query(None),
     category: str | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
@@ -130,6 +137,7 @@ async def get_monitoring(user: dict = Depends(auth.require_admin)):
 
     gpu_devices = db.get_all_params().get("gpu_devices", [])
 
+    # ponytail: list_objects_v2 caps at 1000 keys; use paginator if bucket grows large
     objects = storage.list_objects(storage.bucket)
     total_size = sum(o["size"] for o in objects)
     s3_info = {
