@@ -1,42 +1,88 @@
-import shutil
-from pathlib import Path
+import io
+import os
+import boto3
+from botocore.client import Config
+from botocore.exceptions import ClientError
 
 
 class Storage:
-    """Mock S3 backed by local filesystem.
+    """S3-compatible storage (MinIO / AWS S3).
 
-    Interface mirrors the subset of boto3 we need:
+    Interface mirrors what the executor and API routes need:
       upload_file(bucket, key, local_path) -> s3_uri
-      list_objects(bucket, prefix) -> [{key, size, s3_uri}]
-
-    Swap this class for a real S3Client (boto3) when going to production.
+      upload_bytes(key, data)              -> s3_uri
+      list_objects(bucket, prefix)         -> [{key, size, s3_uri}]
+      get_object_bytes(key)                -> bytes
+      stream_object(key)                   -> iterator[bytes]
+      object_exists(key)                   -> bool
     """
 
-    def __init__(self, base_dir: Path):
-        self.base_dir = Path(base_dir)
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        endpoint_url: str | None = None,
+        access_key: str | None = None,
+        secret_key: str | None = None,
+        bucket: str | None = None,
+    ):
+        endpoint_url = endpoint_url or os.environ.get("DDP_S3_ENDPOINT", "http://127.0.0.1:9000")
+        access_key = access_key or os.environ.get("DDP_S3_ACCESS_KEY", "admin")
+        secret_key = secret_key or os.environ.get("DDP_S3_SECRET_KEY", "Minio@2026")
+        self.bucket = bucket or os.environ.get("DDP_S3_BUCKET", "ddp")
 
-    def upload_file(self, bucket: str, key: str, local_path: Path) -> str:
-        dest = self.base_dir / bucket / key
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(local_path), str(dest))
+        self.s3 = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version="s3v4"),
+            region_name="us-east-1",
+        )
+        self._ensure_bucket()
+
+    def _ensure_bucket(self):
+        try:
+            self.s3.head_bucket(Bucket=self.bucket)
+        except ClientError:
+            self.s3.create_bucket(Bucket=self.bucket)
+
+    def upload_file(self, bucket: str, key: str, local_path) -> str:
+        self.s3.upload_file(str(local_path), bucket, key)
         return f"s3://{bucket}/{key}"
 
+    def upload_bytes(self, key: str, data: bytes) -> str:
+        self.s3.upload_fileobj(io.BytesIO(data), self.bucket, key)
+        return f"s3://{self.bucket}/{key}"
+
     def list_objects(self, bucket: str, prefix: str = "") -> list[dict]:
-        bucket_dir = self.base_dir / bucket
-        if not bucket_dir.exists():
-            return []
+        resp = self.s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
         results = []
-        for f in sorted(bucket_dir.rglob("*")):
-            if not f.is_file():
-                continue
-            rel = f.relative_to(bucket_dir)
-            key = str(rel).replace("\\", "/")
-            if prefix and not key.startswith(prefix):
-                continue
+        for obj in resp.get("Contents", []):
             results.append({
-                "key": key,
-                "size": f.stat().st_size,
-                "s3_uri": f"s3://{bucket}/{key}",
+                "key": obj["Key"],
+                "size": obj["Size"],
+                "s3_uri": f"s3://{bucket}/{obj['Key']}",
             })
         return results
+
+    def get_object_bytes(self, key: str) -> bytes:
+        resp = self.s3.get_object(Bucket=self.bucket, Key=key)
+        return resp["Body"].read()
+
+    def stream_object(self, key: str):
+        resp = self.s3.get_object(Bucket=self.bucket, Key=key)
+        return resp["Body"].iter_chunks()
+
+    def object_exists(self, key: str) -> bool:
+        try:
+            self.s3.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except ClientError:
+            return False
+
+    def delete_prefix(self, prefix: str):
+        """Delete all objects under a prefix."""
+        paginator = self.s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            objects = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+            if objects:
+                self.s3.delete_objects(Bucket=self.bucket, Delete={"Objects": objects})

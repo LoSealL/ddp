@@ -25,6 +25,7 @@ interface Output {
   key: string;
   size: number;
   s3_uri: string;
+  download_url: string;
 }
 
 // ── Element helper ───────────────────────────
@@ -60,7 +61,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     maxRuntimeLabel: "Max Runtime", scheduledUtc: "Scheduled (UTC)",
     started: "Started", finished: "Finished", outputs: "Outputs", s3Prefix: "S3 Prefix",
     cancelJob: "Cancel Job", cancelConfirm: "Cancel this job?",
+    deleteJob: "Delete", deleteConfirm: "Delete this job and all its resources?",
     logs: "Logs", noLogs: "No logs yet.", outputArtifacts: "Output Artifacts",
+    downloadLogs: "Download Logs", downloadCode: "Download Code",
     failed: "Failed", files: "file(s)", min: "min",
     st_pending: "pending", st_running: "running", st_done: "done",
     st_failed: "failed", st_timeout: "timeout", st_cancelled: "cancelled",
@@ -90,7 +93,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     maxRuntimeLabel: "最大运行时长", scheduledUtc: "计划时间 (UTC)",
     started: "开始时间", finished: "结束时间", outputs: "产物数量", s3Prefix: "S3 路径",
     cancelJob: "取消作业", cancelConfirm: "确定取消此作业？",
+    deleteJob: "删除", deleteConfirm: "删除此作业及所有相关资源？",
     logs: "日志", noLogs: "暂无日志。", outputArtifacts: "产物文件",
+    downloadLogs: "下载日志", downloadCode: "下载代码",
     failed: "操作失败", files: "个文件", min: "分钟",
     st_pending: "等待中", st_running: "运行中", st_done: "已完成",
     st_failed: "失败", st_timeout: "超时", st_cancelled: "已取消",
@@ -320,6 +325,7 @@ function renderJobs(): void {
           </div>
         </div>
         <span class="status status-${j.status}">${statusLabel(j.status)}</span>
+        ${j.status === 'running' ? '' : `<button class="btn-delete-card" data-delete-id="${j.id}" title="${t('deleteJob')}">✕</button>`}
       </div>`;
   }).join('');
 }
@@ -366,14 +372,13 @@ async function openModal(jobId: string): Promise<void> {
     html += `<div class="modal-section"><h4>${t('error')}</h4><div class="error-box">${escapeHtml(job.error)}</div></div>`;
   }
 
-  html += `<div class="modal-section"><h4>${t('logs')}</h4><div class="log-box">${logs ? escapeHtml(logs) : `<span style="color:var(--text-dim)">${t('noLogs')}</span>`}</div></div>`;
+  html += `<div class="modal-section"><h4>${t('logs')}${logs ? ` <button class="btn-cancel" data-log-download="${job.id}">${t('downloadLogs')}</button>` : ''}</h4><div class="log-box">${logs ? escapeHtml(logs) : `<span style="color:var(--text-dim)">${t('noLogs')}</span>`}</div></div>`;
 
   if (outputs.length) {
     html += `<div class="modal-section"><h4>${t('outputArtifacts')}</h4><ul class="output-list">`;
     outputs.forEach(o => {
-      const downloadUrl = `/s3/${o.key}`;
       const fname = o.key.split('/').pop() || o.key;
-      html += `<li><a href="${downloadUrl}" download>${escapeHtml(fname)}</a><span class="size">${formatSize(o.size)}</span></li>`;
+      html += `<li><a href="${o.download_url}" download>${escapeHtml(fname)}</a><span class="size">${formatSize(o.size)}</span></li>`;
     });
     html += `</ul></div>`;
   }
@@ -387,6 +392,13 @@ function closeModal(): void {
 
 async function cancelJob(jobId: string): Promise<void> {
   if (!confirm(t('cancelConfirm'))) return;
+  const resp = await fetch(`${API}/${jobId}`, { method: 'DELETE' });
+  if (resp.ok) { closeModal(); await refreshJobs(); }
+  else { const err = await resp.json().catch(() => ({} as Record<string, string>)); alert(err.detail || t('failed')); }
+}
+
+async function deleteJob(jobId: string): Promise<void> {
+  if (!confirm(t('deleteConfirm'))) return;
   const resp = await fetch(`${API}/${jobId}`, { method: 'DELETE' });
   if (resp.ok) { closeModal(); await refreshJobs(); }
   else { const err = await resp.json().catch(() => ({} as Record<string, string>)); alert(err.detail || t('failed')); }
@@ -425,13 +437,20 @@ document.addEventListener('DOMContentLoaded', () => {
   $('modal').addEventListener('click', e => { if (e.target === $('modal')) closeModal(); });
 
   $('job-list').addEventListener('click', e => {
+    const delBtn = (e.target as HTMLElement).closest('.btn-delete-card') as HTMLElement | null;
+    if (delBtn?.dataset.deleteId) { deleteJob(delBtn.dataset.deleteId); return; }
     const card = (e.target as HTMLElement).closest('.job-card') as HTMLElement | null;
     if (card?.dataset.jobId) openModal(card.dataset.jobId);
   });
 
   $('modal-body').addEventListener('click', e => {
-    const btn = (e.target as HTMLElement).closest('.btn-cancel') as HTMLElement | null;
+    const btn = (e.target as HTMLElement).closest('button') as HTMLElement | null;
     if (btn?.dataset.jobId) cancelJob(btn.dataset.jobId);
+    if (btn?.dataset.logDownload) {
+      const a = document.createElement('a');
+      a.href = `${API}/${btn.dataset.logDownload}/logs/download`;
+      a.click();
+    }
   });
 
   checkAuth();
