@@ -21,6 +21,7 @@ class TestUsers:
         uid = db.create_user("bob", "hash2", "salt2")
         user = db.get_user_by_id(uid)
         assert user["username"] == "bob"
+        assert "is_admin" in user
 
     def test_unique_username(self):
         db.create_user("dup", "h", "s")
@@ -82,3 +83,118 @@ class TestJobs:
 
     def test_get_nonexistent(self):
         assert db.get_job("nope") is None
+
+
+class TestSystemParams:
+    def test_default_params_seeded(self):
+        params = db.get_all_params()
+        assert params["time_window_start"] == "22:00"
+        assert params["time_window_end"] == "06:00"
+        assert params["time_window_repeat"] == "daily"
+        assert params["gpu_default_quota"] == 1
+        assert params["storage_default_quota_gb"] == 10.0
+
+    def test_get_single_param(self):
+        assert db.get_param("time_window_start") == "22:00"
+        assert db.get_param("nonexistent") is None
+
+    def test_set_param(self):
+        db.set_param("gpu_default_quota", 4, user_id=1)
+        assert db.get_param("gpu_default_quota") == 4
+
+    def test_set_param_json(self):
+        db.set_param("gpu_devices", '[{"id":0,"name":"GPU-0"}]', user_id=1)
+        import json
+        assert json.loads(db.get_param("gpu_devices"))[0]["name"] == "GPU-0"
+
+
+class TestSystemLogs:
+    def test_log_and_list(self):
+        db.log_event("INFO", "auth", "User registered: alice", user_id=1)
+        logs = db.list_logs()
+        assert len(logs) == 1
+        assert logs[0]["message"] == "User registered: alice"
+        assert logs[0]["level"] == "INFO"
+        assert logs[0]["category"] == "auth"
+
+    def test_log_filter_by_level(self):
+        db.log_event("INFO", "auth", "msg1")
+        db.log_event("ERROR", "system", "msg2")
+        errors = db.list_logs(level="ERROR")
+        assert len(errors) == 1
+        assert errors[0]["message"] == "msg2"
+
+    def test_log_filter_by_category(self):
+        db.log_event("INFO", "auth", "msg1")
+        db.log_event("INFO", "job", "msg2")
+        auth_logs = db.list_logs(category="auth")
+        assert len(auth_logs) == 1
+        assert auth_logs[0]["message"] == "msg1"
+
+    def test_log_pagination(self):
+        for i in range(10):
+            db.log_event("INFO", "system", f"msg{i}")
+        page = db.list_logs(limit=5, offset=0)
+        assert len(page) == 5
+        page2 = db.list_logs(limit=5, offset=5)
+        assert len(page2) == 5
+        assert page[0]["message"] != page2[0]["message"]
+
+    def test_log_count(self):
+        db.log_event("INFO", "auth", "msg1")
+        db.log_event("ERROR", "system", "msg2")
+        assert db.count_logs() == 2
+        assert db.count_logs(level="ERROR") == 1
+
+    def test_log_with_details(self):
+        db.log_event("INFO", "admin", "params updated", details='{"key":"gpu"}')
+        logs = db.list_logs()
+        assert logs[0]["details"] == '{"key":"gpu"}'
+
+
+class TestAdminUserColumns:
+    def test_first_user_is_admin(self):
+        uid = db.create_user("alice", "h", "s")
+        user = db.get_user_by_id(uid)
+        assert user["is_admin"] == 1
+
+    def test_second_user_not_admin(self):
+        db.create_user("alice", "h", "s")
+        uid2 = db.create_user("bob", "h", "s")
+        user = db.get_user_by_id(uid2)
+        assert user["is_admin"] == 0
+
+    def test_list_users_with_admin_flag(self):
+        db.create_user("alice", "h", "s")
+        db.create_user("bob", "h", "s")
+        users = db.list_users()
+        assert len(users) == 2
+        assert users[0]["is_admin"] == 1
+        assert users[1]["is_admin"] == 0
+
+    def test_update_user_admin_flag(self):
+        db.create_user("alice", "h", "s")
+        uid2 = db.create_user("bob", "h", "s")
+        db.update_user(uid2, is_admin=1)
+        assert db.get_user_by_id(uid2)["is_admin"] == 1
+
+    def test_update_user_quotas(self):
+        db.create_user("alice", "h", "s")
+        uid2 = db.create_user("bob", "h", "s")
+        db.update_user(uid2, gpu_quota_override=8, storage_quota_override_gb=50.0)
+        user = db.get_user_by_id(uid2)
+        assert user["gpu_quota_override"] == 8
+        assert user["storage_quota_override_gb"] == 50.0
+
+    def test_delete_user(self):
+        db.create_user("alice", "h", "s")
+        uid2 = db.create_user("bob", "h", "s")
+        db.delete_user(uid2)
+        assert db.get_user_by_id(uid2) is None
+
+    def test_count_admins(self):
+        db.create_user("alice", "h", "s")
+        uid2 = db.create_user("bob", "h", "s")
+        assert db.count_admins() == 1
+        db.update_user(uid2, is_admin=1)
+        assert db.count_admins() == 2
