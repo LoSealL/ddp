@@ -2,7 +2,7 @@ import asyncio
 import zipfile
 import json
 import shutil
-import shlex
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -12,7 +12,8 @@ from .storage import Storage
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 WORKSPACE_DIR = DATA_DIR / "workspaces"
-LOG_DIR = DATA_DIR / "logs"
+
+BUCKET = "ddp"
 
 
 class MockExecutor:
@@ -27,7 +28,7 @@ class MockExecutor:
 
     def __init__(self, storage: Storage):
         self.storage = storage
-        for d in [UPLOAD_DIR, WORKSPACE_DIR, LOG_DIR]:
+        for d in [UPLOAD_DIR, WORKSPACE_DIR]:
             d.mkdir(parents=True, exist_ok=True)
 
     async def execute(self, job_id: str):
@@ -37,9 +38,9 @@ class MockExecutor:
 
         db.update_job(job_id, status="running",
                       started_at=datetime.now(timezone.utc).isoformat())
+        db.log_event("DEBUG", "system", f"Job started: {job_id}")
 
         work_dir = WORKSPACE_DIR / job_id
-        log_path = LOG_DIR / f"{job_id}.log"
 
         try:
             # --- init: unzip ---
@@ -89,21 +90,25 @@ class MockExecutor:
                 log_chunks.append(b"\n[TIMEOUT: killed after max runtime]\n")
                 status = "timeout"
 
-            log_path.write_bytes(b"".join(log_chunks))
+            # --- upload logs to S3 ---
+            log_bytes = b"".join(log_chunks)
+            self.storage.upload_bytes(f"jobs/{job_id}/logs/run.log", log_bytes)
 
             # --- collect outputs (conventional dir + manifest) ---
             output_count = self._collect_outputs(job_id, work_dir)
 
             # --- cleanup workspace (zero residue) ---
             shutil.rmtree(str(work_dir), ignore_errors=True)
+            os.remove(str(zip_path))
 
             db.update_job(
                 job_id,
                 status=status,
                 finished_at=datetime.now(timezone.utc).isoformat(),
                 output_count=output_count,
-                s3_prefix=f"ddp/jobs/{job_id}/",
+                s3_prefix=f"{BUCKET}/jobs/{job_id}/",
             )
+            db.log_event("DEBUG", "system", f"Job finished: {job_id} status={status}")
 
         except Exception as e:
             db.update_job(
@@ -112,6 +117,7 @@ class MockExecutor:
                 finished_at=datetime.now(timezone.utc).isoformat(),
                 error=str(e),
             )
+            db.log_event("ERROR", "system", f"Job failed: {job_id} error={e}")
             shutil.rmtree(str(work_dir), ignore_errors=True)
 
     def _flatten_single_toplevel(self, work_dir: Path):
@@ -126,8 +132,7 @@ class MockExecutor:
             inner.rmdir()
 
     def _collect_outputs(self, job_id: str, work_dir: Path) -> int:
-        bucket = "ddp"
-        prefix = f"jobs/{job_id}"
+        prefix = f"jobs/{job_id}/output"
         count = 0
 
         # 1. Conventional output directory
@@ -135,9 +140,9 @@ class MockExecutor:
         if output_dir.exists():
             for f in output_dir.rglob("*"):
                 if f.is_file():
-                    rel = f.relative_to(work_dir)
+                    rel = f.relative_to(work_dir / "output")
                     key = f"{prefix}/{rel}".replace("\\", "/")
-                    self.storage.upload_file(bucket, key, f)
+                    self.storage.upload_file(BUCKET, key, f)
                     count += 1
 
         # 2. Manifest-declared files
@@ -149,7 +154,7 @@ class MockExecutor:
                     full = work_dir / fpath
                     if full.exists() and full.is_file():
                         key = f"{prefix}/{fpath}".replace("\\", "/")
-                        self.storage.upload_file(bucket, key, full)
+                        self.storage.upload_file(BUCKET, key, full)
                         count += 1
             except (json.JSONDecodeError, OSError):
                 pass

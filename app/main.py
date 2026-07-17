@@ -2,30 +2,25 @@ import uuid
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Cookie
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-from . import db, auth
+from . import db, auth, admin, timecheck
 from .storage import Storage
-from .executor import MockExecutor, UPLOAD_DIR, LOG_DIR
+from .executor import MockExecutor, UPLOAD_DIR
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+DIST_DIR = FRONTEND_DIR / "dist"
 
-storage = Storage(DATA_DIR / "mock-s3")
+storage = Storage()
 executor = MockExecutor(storage)
 scheduler = AsyncIOScheduler(timezone="UTC")
-
-
-def _parse_local_to_utc(dt_str: str) -> str:
-    """HTML datetime-local gives naive local time -> convert to UTC ISO."""
-    dt = datetime.fromisoformat(dt_str)
-    dt_utc = dt.astimezone().astimezone(timezone.utc)
-    return dt_utc.isoformat()
 
 
 @asynccontextmanager
@@ -40,13 +35,20 @@ async def lifespan(app: FastAPI):
                 executor.execute, trigger, args=[job["id"]], id=job["id"],
                 replace_existing=True,
             )
-    scheduler.start()
-    yield
-    scheduler.shutdown(wait=False)
+    if not scheduler.running:
+        scheduler.start()
+    try:
+        yield
+    finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="DDP", lifespan=lifespan)
-app.mount("/s3", StaticFiles(directory=str(DATA_DIR / "mock-s3")), name="s3")
+app.include_router(admin.router)
+_assets = DIST_DIR / "assets"
+if _assets.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
 
 
 # ── Auth ─────────────────────────────────────────────
@@ -62,6 +64,7 @@ async def register(username: str = Form(...), password: str = Form(...)):
         raise HTTPException(409, "Username already taken")
     pw_hash, salt = auth.hash_password(password)
     user_id = db.create_user(username, pw_hash, salt)
+    db.log_event("INFO", "auth", f"User {username} registered", user_id=user_id)
     token = auth.create_session_for_user(user_id)
     resp = _set_cookie(token)
     resp = _json_response({"ok": True, "username": username}, token)
@@ -69,7 +72,6 @@ async def register(username: str = Form(...), password: str = Form(...)):
 
 
 def _json_response(data: dict, token: str):
-    from starlette.responses import JSONResponse
     resp = JSONResponse(data)
     resp.set_cookie("session", token, httponly=True, samesite="lax", max_age=int(auth.SESSION_DURATION.total_seconds()))
     return resp
@@ -83,7 +85,9 @@ def _set_cookie(token: str):
 async def login(username: str = Form(...), password: str = Form(...)):
     user = db.get_user_by_username(username)
     if not user or not auth.verify_password(password, user["password_hash"], user["salt"]):
+        db.log_event("WARNING", "auth", f"Failed login attempt: {username}")
         raise HTTPException(401, "Invalid username or password")
+    db.log_event("INFO", "auth", f"User logged in: {username}", user_id=user["id"])
     token = auth.create_session_for_user(user["id"])
     return _set_cookie(token)
 
@@ -91,8 +95,10 @@ async def login(username: str = Form(...), password: str = Form(...)):
 @app.post("/api/auth/logout")
 async def logout(session: str | None = Cookie(None)):
     if session:
+        user = db.get_user_by_session(session)
+        if user:
+            db.log_event("INFO", "auth", f"User logged out: {user['username']}", user_id=user["id"])
         db.delete_session(session)
-    from starlette.responses import JSONResponse
     resp = JSONResponse({"ok": True})
     resp.delete_cookie("session")
     return resp
@@ -100,7 +106,7 @@ async def logout(session: str | None = Cookie(None)):
 
 @app.get("/api/auth/me")
 async def me(user: dict = Depends(auth.get_current_user)):
-    return {"id": user["id"], "username": user["username"]}
+    return {"id": user["id"], "username": user["username"], "is_admin": user.get("is_admin", 0)}
 
 
 # ── Jobs (protected) ─────────────────────────────────
@@ -123,16 +129,30 @@ async def create_job(
     content = await file.read()
     zip_path.write_bytes(content)
 
-    scheduled_utc = _parse_local_to_utc(scheduled_at)
+    # Persist uploaded code to S3
+    storage.upload_bytes(f"jobs/{job_id}/code/{file.filename}", content)
+
+    # Parse local datetime, check time window, convert to UTC
+    local_dt = datetime.fromisoformat(scheduled_at)
+    adjusted_dt = timecheck.check_scheduled_time(local_dt)
+    was_queued = adjusted_dt != local_dt
+
+    dt_utc = adjusted_dt.astimezone(timezone.utc)
+    scheduled_utc = dt_utc.isoformat()
+
     db.create_job(job_id, user["id"], name, file.filename, entry_command, scheduled_utc, timeout_minutes)
 
-    dt = datetime.fromisoformat(scheduled_utc)
+    db.log_event("INFO", "job", f"Job submitted: {name} ({job_id})", user_id=user["id"])
+    if was_queued:
+        db.log_event("INFO", "job", f"Job queued until window: {name} -> {adjusted_dt.isoformat()}",
+                     user_id=user["id"])
+
     scheduler.add_job(
-        executor.execute, DateTrigger(run_date=dt),
+        executor.execute, DateTrigger(run_date=dt_utc),
         args=[job_id], id=job_id, replace_existing=True,
     )
 
-    return {"id": job_id, "status": "pending"}
+    return {"id": job_id, "status": "pending", "queued": was_queued}
 
 
 @app.get("/api/jobs")
@@ -153,10 +173,28 @@ async def get_logs(job_id: str, user: dict = Depends(auth.get_current_user)):
     job = db.get_job(job_id)
     if not job or job.get("user_id") != user["id"]:
         raise HTTPException(404)
-    log_path = LOG_DIR / f"{job_id}.log"
-    if log_path.exists():
-        return {"logs": log_path.read_text(encoding="utf-8", errors="replace")}
-    return {"logs": ""}
+    try:
+        data = storage.get_object_bytes(f"jobs/{job_id}/logs/run.log")
+        return {"logs": data.decode("utf-8", errors="replace")}
+    except Exception:
+        return {"logs": ""}
+
+
+@app.get("/api/jobs/{job_id}/logs/download")
+async def download_logs(job_id: str, user: dict = Depends(auth.get_current_user)):
+    job = db.get_job(job_id)
+    if not job or job.get("user_id") != user["id"]:
+        raise HTTPException(404)
+    try:
+        data = storage.get_object_bytes(f"jobs/{job_id}/logs/run.log")
+    except Exception:
+        raise HTTPException(404, "Logs not available")
+    filename = f"{job['name']}_run.log"
+    return StreamingResponse(
+        iter([data]),
+        media_type="text/plain",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @app.get("/api/jobs/{job_id}/outputs")
@@ -164,8 +202,27 @@ async def get_outputs(job_id: str, user: dict = Depends(auth.get_current_user)):
     job = db.get_job(job_id)
     if not job or job.get("user_id") != user["id"]:
         raise HTTPException(404)
-    objects = storage.list_objects("ddp", f"jobs/{job_id}/")
+    objects = storage.list_objects(storage.bucket, f"jobs/{job_id}/output/")
+    for o in objects:
+        rel = o["key"].split("/", 2)[-1]  # strip jobs/{job_id}/
+        o["download_url"] = f"/api/jobs/{job_id}/download/{rel}"
     return {"outputs": objects}
+
+
+@app.get("/api/jobs/{job_id}/download/{file_path:path}")
+async def download_file(job_id: str, file_path: str, user: dict = Depends(auth.get_current_user)):
+    job = db.get_job(job_id)
+    if not job or job.get("user_id") != user["id"]:
+        raise HTTPException(404)
+    key = f"jobs/{job_id}/{file_path}"
+    if not storage.object_exists(key):
+        raise HTTPException(404, "File not found")
+    fname = Path(file_path).name
+    return StreamingResponse(
+        storage.stream_object(key),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"},
+    )
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -179,10 +236,13 @@ async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
         except Exception:
             pass
         db.update_job(job_id, status="cancelled")
+        db.log_event("INFO", "job", f"Job cancelled: {job_id}", user_id=user["id"])
     elif job["status"] in ("running",):
         raise HTTPException(409, "Cannot cancel a running job in mock mode")
     else:
+        storage.delete_prefix(f"jobs/{job_id}/")
         db.delete_job(job_id)
+        db.log_event("INFO", "job", f"Job deleted: {job_id}", user_id=user["id"])
     return {"ok": True}
 
 
@@ -190,4 +250,7 @@ async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+    index_html = DIST_DIR / "index.html"
+    if index_html.exists():
+        return index_html.read_text(encoding="utf-8")
+    return "<h1>Frontend not built</h1><p>Run <code>cd frontend && bun install && bun run build</code></p>"

@@ -3,4 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 *.zip
+frontend/node_modules/
+frontend/dist/
+ddp.egg-info/
 

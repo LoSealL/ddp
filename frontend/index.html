@@ -4,279 +4,22 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DDP — Delayed Dispatch Platform</title>
-<style>
-  :root {
-    --bg: #0f1117;
-    --card: #1a1d27;
-    --card-hi: #222632;
-    --border: #2a2d3a;
-    --text: #e4e4e7;
-    --text-dim: #71717a;
-    --accent: #6366f1;
-    --accent-hi: #818cf8;
-    --green: #22c55e;
-    --red: #ef4444;
-    --orange: #f59e0b;
-    --blue: #3b82f6;
-    --gray: #71717a;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
-    background: var(--bg); color: var(--text);
-    min-height: 100vh; font-size: 14px;
-  }
-
-  /* Auth view */
-  #auth-view {
-    display: flex; align-items: center; justify-content: center;
-    min-height: 100vh; padding: 20px;
-  }
-  .auth-card {
-    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
-    width: 380px; padding: 36px 32px; position: relative;
-  }
-  .auth-card .logo { text-align: center; margin-bottom: 28px; }
-  .auth-card .logo h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
-  .auth-card .logo p { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
-  .auth-tabs { display: flex; gap: 4px; background: var(--bg); border-radius: 8px; padding: 4px; margin-bottom: 24px; }
-  .auth-tab {
-    flex: 1; text-align: center; padding: 8px; border-radius: 6px;
-    font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s;
-    color: var(--text-dim); border: none; background: none;
-  }
-  .auth-tab.active { background: var(--accent); color: #fff; }
-  .auth-form .field { margin-bottom: 16px; }
-  .auth-form label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--text-dim); }
-  .auth-form input {
-    width: 100%; background: var(--bg); border: 1px solid var(--border);
-    border-radius: 8px; padding: 10px 14px; color: var(--text); font-size: 14px;
-    transition: border-color .15s;
-  }
-  .auth-form input:focus { outline: none; border-color: var(--accent); }
-  .auth-error {
-    background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3);
-    border-radius: 8px; padding: 10px 14px; color: var(--red); font-size: 13px;
-    margin-bottom: 16px; display: none;
-  }
-  .auth-error.show { display: block; }
-  .btn-auth {
-    width: 100%; background: var(--accent); color: #fff; border: none;
-    border-radius: 8px; padding: 12px; font-size: 14px; font-weight: 600;
-    cursor: pointer; transition: background .15s; margin-top: 4px;
-  }
-  .btn-auth:hover { background: var(--accent-hi); }
-  .btn-auth:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  /* Language toggle */
-  .lang-toggle {
-    position: absolute; top: 16px; right: 16px;
-    background: var(--bg); border: 1px solid var(--border);
-    border-radius: 6px; padding: 4px 10px; font-size: 12px;
-    color: var(--text-dim); cursor: pointer; transition: all .15s;
-  }
-  .lang-toggle:hover { color: var(--text); border-color: var(--accent); }
-
-  /* Header */
-  header {
-    border-bottom: 1px solid var(--border);
-    padding: 16px 32px;
-    display: flex; align-items: center; gap: 12px;
-  }
-  header h1 { font-size: 18px; font-weight: 600; }
-  header .badge-mock {
-    background: var(--orange); color: #000; font-size: 11px;
-    padding: 2px 8px; border-radius: 4px; font-weight: 600;
-  }
-  header .spacer { flex: 1; }
-  header .user-area {
-    display: flex; align-items: center; gap: 12px;
-  }
-  header .user-area .username {
-    font-size: 13px; color: var(--text-dim);
-  }
-  header .user-area .username strong { color: var(--text); }
-  .btn-logout {
-    background: var(--card); color: var(--text-dim); border: 1px solid var(--border);
-    border-radius: 6px; padding: 5px 14px; font-size: 12px; cursor: pointer;
-    transition: all .15s;
-  }
-  .btn-logout:hover { color: var(--red); border-color: rgba(239,68,68,.3); }
-  .btn-lang {
-    background: var(--card); color: var(--text-dim); border: 1px solid var(--border);
-    border-radius: 6px; padding: 5px 14px; font-size: 12px; cursor: pointer;
-    transition: all .15s;
-  }
-  .btn-lang:hover { color: var(--text); border-color: var(--accent); }
-
-  /* Layout */
-  .layout { display: flex; gap: 1px; background: var(--border); min-height: calc(100vh - 57px); }
-  .layout > section { background: var(--bg); flex: 1; }
-  .sidebar { width: 420px; min-width: 420px; padding: 24px; overflow-y: auto; }
-  .main { padding: 24px 32px; }
-
-  /* Form */
-  .sidebar h2 { font-size: 15px; margin-bottom: 20px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
-  .field { margin-bottom: 16px; }
-  .field label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--text-dim); }
-  .field input, .field select {
-    width: 100%; background: var(--card); border: 1px solid var(--border);
-    border-radius: 8px; padding: 10px 12px; color: var(--text); font-size: 14px;
-    transition: border-color .15s;
-  }
-  .field input:focus { outline: none; border-color: var(--accent); }
-  .field input[type="file"] { padding: 8px; cursor: pointer; }
-  .field .hint { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
-  .field-row { display: flex; gap: 12px; }
-  .field-row .field { flex: 1; }
-
-  .btn-submit {
-    width: 100%; background: var(--accent); color: #fff; border: none;
-    border-radius: 8px; padding: 12px; font-size: 14px; font-weight: 600;
-    cursor: pointer; transition: background .15s;
-  }
-  .btn-submit:hover { background: var(--accent-hi); }
-  .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .upload-zone {
-    border: 2px dashed var(--border); border-radius: 10px;
-    padding: 24px; text-align: center; cursor: pointer;
-    transition: border-color .15s, background .15s;
-  }
-  .upload-zone:hover, .upload-zone.dragover { border-color: var(--accent); background: var(--card); }
-  .upload-zone .icon { font-size: 28px; margin-bottom: 8px; }
-  .upload-zone .label { color: var(--text-dim); }
-  .upload-zone .filename { color: var(--accent-hi); font-weight: 600; margin-top: 6px; }
-  .upload-zone input { display: none; }
-
-  /* Job list */
-  .main h2 { font-size: 15px; margin-bottom: 20px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; display: flex; justify-content: space-between; align-items: center; }
-  .main h2 .count { background: var(--card); padding: 2px 10px; border-radius: 12px; font-size: 12px; }
-
-  .job-card {
-    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-    padding: 16px 20px; margin-bottom: 10px; cursor: pointer;
-    transition: border-color .15s, background .15s;
-    display: flex; align-items: center; gap: 16px;
-  }
-  .job-card:hover { border-color: var(--accent); background: var(--card-hi); }
-  .job-card .info { flex: 1; }
-  .job-card .name { font-weight: 600; font-size: 15px; }
-  .job-card .meta { font-size: 12px; color: var(--text-dim); margin-top: 4px; display: flex; gap: 16px; flex-wrap: wrap; }
-  .job-card .meta span { display: flex; align-items: center; gap: 4px; }
-
-  /* Status badge */
-  .status {
-    font-size: 11px; font-weight: 600; padding: 3px 10px;
-    border-radius: 12px; text-transform: uppercase; letter-spacing: 0.05em;
-    white-space: nowrap;
-  }
-  .status-pending   { background: rgba(245,158,11,.15); color: var(--orange); }
-  .status-running   { background: rgba(59,130,246,.15); color: var(--blue); }
-  .status-done      { background: rgba(34,197,94,.15);  color: var(--green); }
-  .status-failed    { background: rgba(239,68,68,.15);  color: var(--red); }
-  .status-timeout   { background: rgba(245,158,11,.15); color: var(--orange); }
-  .status-cancelled { background: rgba(113,113,122,.15); color: var(--gray); }
-
-  .empty { text-align: center; padding: 60px 20px; color: var(--text-dim); }
-  .empty .icon { font-size: 40px; margin-bottom: 12px; }
-
-  /* Modal */
-  .modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,.6);
-    display: none; align-items: center; justify-content: center; z-index: 100;
-  }
-  .modal-overlay.open { display: flex; }
-  .modal {
-    background: var(--bg); border: 1px solid var(--border); border-radius: 14px;
-    width: 800px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column;
-  }
-  .modal-header {
-    padding: 20px 24px; border-bottom: 1px solid var(--border);
-    display: flex; justify-content: space-between; align-items: center;
-  }
-  .modal-header h3 { font-size: 16px; }
-  .modal-close {
-    background: none; border: none; color: var(--text-dim); font-size: 22px;
-    cursor: pointer; line-height: 1; padding: 4px;
-  }
-  .modal-close:hover { color: var(--text); }
-  .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
-  .modal-section { margin-bottom: 24px; }
-  .modal-section h4 { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
-  .kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; }
-  .kv { display: flex; flex-direction: column; }
-  .kv .k { font-size: 12px; color: var(--text-dim); }
-  .kv .v { font-size: 14px; margin-top: 2px; }
-
-  .log-box {
-    background: #000; border-radius: 8px; padding: 16px;
-    font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 13px;
-    color: #d4d4d4; max-height: 300px; overflow-y: auto;
-    white-space: pre-wrap; word-break: break-all;
-  }
-
-  .output-list { list-style: none; }
-  .output-list li {
-    padding: 8px 12px; background: var(--card); border-radius: 6px; margin-bottom: 6px;
-    display: flex; justify-content: space-between; align-items: center;
-  }
-  .output-list a { color: var(--accent-hi); text-decoration: none; font-size: 13px; }
-  .output-list a:hover { text-decoration: underline; }
-  .output-list .size { color: var(--text-dim); font-size: 12px; }
-
-  .error-box {
-    background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3);
-    border-radius: 8px; padding: 12px; color: var(--red); font-size: 13px;
-  }
-
-  .btn-cancel {
-    background: rgba(239,68,68,.15); color: var(--red); border: 1px solid rgba(239,68,68,.3);
-    border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer;
-  }
-  .btn-cancel:hover { background: rgba(239,68,68,.25); }
-
-  .spinner {
-    display: inline-block; width: 14px; height: 14px;
-    border: 2px solid var(--border); border-top-color: var(--accent);
-    border-radius: 50%; animation: spin .6s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* Search */
-  .search-bar { margin-bottom: 16px; display: flex; gap: 10px; }
-  .search-bar input {
-    flex: 1; background: var(--card); border: 1px solid var(--border);
-    border-radius: 8px; padding: 9px 14px; color: var(--text); font-size: 14px;
-    transition: border-color .15s;
-  }
-  .search-bar input:focus { outline: none; border-color: var(--accent); }
-  .search-bar input::placeholder { color: var(--text-dim); }
-  .search-bar select {
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 8px; padding: 9px 14px; color: var(--text); font-size: 14px;
-    cursor: pointer; transition: border-color .15s; min-width: 140px;
-  }
-  .search-bar select:focus { outline: none; border-color: var(--accent); }
-  .search-bar select option { background: var(--card); }
-</style>
 </head>
 <body>
 
-<!-- Auth View -->
 <div id="auth-view" style="display:none">
   <div class="auth-card">
-    <button class="lang-toggle" id="lang-toggle-auth" onclick="toggleLang()">中文</button>
+    <button class="lang-toggle" id="lang-toggle-auth">中文</button>
     <div class="logo">
       <h1>DDP</h1>
       <p data-i18n="tagline">Delayed Dispatch Platform</p>
     </div>
     <div class="auth-tabs">
-      <button class="auth-tab active" id="tab-login" onclick="switchAuthTab('login')" data-i18n="login">Login</button>
-      <button class="auth-tab" id="tab-register" onclick="switchAuthTab('register')" data-i18n="register">Register</button>
+      <button class="auth-tab active" id="tab-login" data-i18n="login">Login</button>
+      <button class="auth-tab" id="tab-register" data-i18n="register">Register</button>
     </div>
     <div class="auth-error" id="auth-error"></div>
-    <form class="auth-form" id="login-form" onsubmit="return doLogin(event)">
+    <form class="auth-form" id="login-form">
       <div class="field">
         <label data-i18n="username">Username</label>
         <input type="text" name="username" required autocomplete="username" />
@@ -287,7 +30,7 @@
       </div>
       <button type="submit" class="btn-auth" id="login-btn" data-i18n="login">Login</button>
     </form>
-    <form class="auth-form" id="register-form" style="display:none" onsubmit="return doRegister(event)">
+    <form class="auth-form" id="register-form" style="display:none">
       <div class="field">
         <label data-i18n="username">Username</label>
         <input type="text" name="username" required autocomplete="username" minlength="2" />
@@ -301,17 +44,17 @@
   </div>
 </div>
 
-<!-- App View -->
 <div id="app-view" style="display:none">
   <header>
     <h1>DDP</h1>
     <span style="color: var(--text-dim); font-size: 13px;" data-i18n="tagline">Delayed Dispatch Platform</span>
     <span class="badge-mock">MOCK MODE</span>
     <div class="spacer"></div>
+    <button class="btn-admin" id="btn-admin" style="display:none" data-i18n="admin">Admin</button>
     <div class="user-area">
-      <button class="btn-lang" id="lang-toggle-app" onclick="toggleLang()">中文</button>
+      <button class="btn-lang" id="lang-toggle-app">中文</button>
       <span class="username"><span data-i18n="signedInAs">Signed in as</span> <strong id="nav-username">—</strong></span>
-      <button class="btn-logout" onclick="doLogout()" data-i18n="logout">Logout</button>
+      <button class="btn-logout" id="btn-logout" data-i18n="logout">Logout</button>
     </div>
   </header>
   <div class="layout">
@@ -352,8 +95,8 @@
     <section class="main">
       <h2><span data-i18n="jobs">Jobs</span> <span class="count" id="job-count">0</span></h2>
       <div class="search-bar">
-        <input type="text" id="job-search" data-i18n-ph="searchPlaceholder" placeholder="Search by name or file..." oninput="filterJobs()" />
-        <select id="job-status-filter" onchange="filterJobs()">
+        <input type="text" id="job-search" data-i18n-ph="searchPlaceholder" placeholder="Search by name or file..." />
+        <select id="job-status-filter">
           <option value="" data-i18n="allStatuses">All Statuses</option>
           <option value="pending" data-i18n="st_pending">Pending</option>
           <option value="running" data-i18n="st_running">Running</option>
@@ -366,396 +109,27 @@
       <div id="job-list"></div>
     </section>
   </div>
+  <div id="admin-view" style="display:none">
+    <div class="admin-tabs">
+      <button class="admin-tab active" id="admin-tab-users" data-i18n="adminUsers">Users</button>
+      <button class="admin-tab" id="admin-tab-params" data-i18n="adminParams">Parameters</button>
+      <button class="admin-tab" id="admin-tab-logs" data-i18n="adminLogs">Logs</button>
+      <button class="admin-tab" id="admin-tab-monitor" data-i18n="adminMonitor">Monitoring</button>
+    </div>
+    <div id="admin-content" class="admin-content"></div>
+  </div>
 </div>
 
-<!-- Modal -->
 <div class="modal-overlay" id="modal">
   <div class="modal">
     <div class="modal-header">
       <h3 id="modal-title" data-i18n="jobDetail">Job Detail</h3>
-      <button class="modal-close" onclick="closeModal()">&times;</button>
+      <button class="modal-close" id="modal-close">&times;</button>
     </div>
     <div class="modal-body" id="modal-body"></div>
   </div>
 </div>
 
-<script>
-// ── i18n ─────────────────────────────────────
-const I18N = {
-  en: {
-    tagline: "Delayed Dispatch Platform",
-    login: "Login", register: "Register",
-    username: "Username", password: "Password",
-    loginFailed: "Login failed", registerFailed: "Registration failed",
-    signingIn: "Signing in...", creating: "Creating...",
-    logout: "Logout", signedInAs: "Signed in as",
-    submitJob: "Submit Job", jobs: "Jobs",
-    jobName: "Job Name", projectZip: "Project (zip)",
-    dropzoneHint: "Click or drag a .zip here",
-    entryCommand: "Entry Command", entryCommandHint: "Shell command to run inside the project root.",
-    scheduledStart: "Scheduled Start (local time)", scheduledStartHint: "Platform fires within ~30s of this time.",
-    maxRuntime: "Max Runtime (minutes)", maxRuntimeHint: "Hard kill at this point. Outputs collected up to then.",
-    scheduleJob: "Schedule Job", scheduling: "Scheduling...",
-    error: "Error", unknown: "Unknown",
-    noJobs: "No jobs yet. Submit one from the left.",
-    noJobsMatch: "No jobs match your search.",
-    searchPlaceholder: "Search by name or file...",
-    allStatuses: "All Statuses",
-    loading: "Loading...", jobDetail: "Job Detail",
-    status: "Status", originalFile: "Original File", entryCmd: "Entry Command",
-    maxRuntimeLabel: "Max Runtime", scheduledUtc: "Scheduled (UTC)",
-    started: "Started", finished: "Finished", outputs: "Outputs", s3Prefix: "S3 Prefix",
-    cancelJob: "Cancel Job", cancelConfirm: "Cancel this job?",
-    logs: "Logs", noLogs: "No logs yet.", outputArtifacts: "Output Artifacts",
-    failed: "Failed", files: "file(s)", min: "min",
-    st_pending: "pending", st_running: "running", st_done: "done",
-    st_failed: "failed", st_timeout: "timeout", st_cancelled: "cancelled",
-    langLabel: "中文",
-  },
-  zh: {
-    tagline: "延迟调度平台",
-    login: "登录", register: "注册",
-    username: "用户名", password: "密码",
-    loginFailed: "登录失败", registerFailed: "注册失败",
-    signingIn: "登录中...", creating: "创建中...",
-    logout: "登出", signedInAs: "当前用户",
-    submitJob: "提交作业", jobs: "作业列表",
-    jobName: "作业名称", projectZip: "项目文件 (zip)",
-    dropzoneHint: "点击或拖拽 .zip 文件到此处",
-    entryCommand: "入口命令", entryCommandHint: "在项目根目录执行的 Shell 命令。",
-    scheduledStart: "计划启动时间 (本地)", scheduledStartHint: "平台在此时间后约 30 秒内触发。",
-    maxRuntime: "最大运行时长 (分钟)", maxRuntimeHint: "超时强制终止，已生成的产物仍会收集。",
-    scheduleJob: "调度作业", scheduling: "调度中...",
-    error: "错误", unknown: "未知",
-    noJobs: "暂无作业。从左侧提交一个。",
-    noJobsMatch: "没有匹配的作业。",
-    searchPlaceholder: "按名称或文件搜索...",
-    allStatuses: "全部状态",
-    loading: "加载中...", jobDetail: "作业详情",
-    status: "状态", originalFile: "原始文件", entryCmd: "入口命令",
-    maxRuntimeLabel: "最大运行时长", scheduledUtc: "计划时间 (UTC)",
-    started: "开始时间", finished: "结束时间", outputs: "产物数量", s3Prefix: "S3 路径",
-    cancelJob: "取消作业", cancelConfirm: "确定取消此作业？",
-    logs: "日志", noLogs: "暂无日志。", outputArtifacts: "产物文件",
-    failed: "操作失败", files: "个文件", min: "分钟",
-    st_pending: "等待中", st_running: "运行中", st_done: "已完成",
-    st_failed: "失败", st_timeout: "超时", st_cancelled: "已取消",
-    langLabel: "EN",
-  },
-};
-
-let LANG = localStorage.getItem('ddp-lang') || (navigator.language.startsWith('zh') ? 'zh' : 'en');
-
-function t(key) { return I18N[LANG][key] || key; }
-
-function applyI18n() {
-  document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
-  document.querySelectorAll('[data-i18n]').forEach(el => {
-    const key = el.dataset.i18n;
-    if (I18N[LANG][key]) el.textContent = I18N[LANG][key];
-  });
-  document.querySelectorAll('[data-i18n-ph]').forEach(el => {
-    const key = el.dataset.i18nPh;
-    if (I18N[LANG][key]) el.placeholder = I18N[LANG][key];
-  });
-  const authToggle = document.getElementById('lang-toggle-auth');
-  const appToggle = document.getElementById('lang-toggle-app');
-  if (authToggle) authToggle.textContent = I18N[LANG].langLabel;
-  if (appToggle) appToggle.textContent = I18N[LANG].langLabel;
-}
-
-function toggleLang() {
-  LANG = LANG === 'en' ? 'zh' : 'en';
-  localStorage.setItem('ddp-lang', LANG);
-  applyI18n();
-  if (document.getElementById('app-view').style.display !== 'none') renderJobs();
-}
-
-// ── App ──────────────────────────────────────
-const API = '/api/jobs';
-let refreshTimer = null;
-let allJobs = [];
-
-function switchAuthTab(tab) {
-  document.getElementById('tab-login').classList.toggle('active', tab === 'login');
-  document.getElementById('tab-register').classList.toggle('active', tab === 'register');
-  document.getElementById('login-form').style.display = tab === 'login' ? '' : 'none';
-  document.getElementById('register-form').style.display = tab === 'register' ? '' : 'none';
-  hideAuthError();
-}
-
-function showAuthError(msg) {
-  const el = document.getElementById('auth-error');
-  el.textContent = msg;
-  el.classList.add('show');
-}
-function hideAuthError() {
-  document.getElementById('auth-error').classList.remove('show');
-}
-
-async function doLogin(e) {
-  e.preventDefault();
-  hideAuthError();
-  const btn = document.getElementById('login-btn');
-  btn.disabled = true; btn.textContent = t('signingIn');
-  try {
-    const fd = new FormData(e.target);
-    const resp = await fetch('/api/auth/login', { method: 'POST', body: fd });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      showAuthError(err.detail || t('loginFailed'));
-      return false;
-    }
-    await checkAuth();
-  } finally {
-    btn.disabled = false; btn.textContent = t('login');
-  }
-  return false;
-}
-
-async function doRegister(e) {
-  e.preventDefault();
-  hideAuthError();
-  const btn = document.getElementById('register-btn');
-  btn.disabled = true; btn.textContent = t('creating');
-  try {
-    const fd = new FormData(e.target);
-    const resp = await fetch('/api/auth/register', { method: 'POST', body: fd });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      showAuthError(err.detail || t('registerFailed'));
-      return false;
-    }
-    await checkAuth();
-  } finally {
-    btn.disabled = false; btn.textContent = t('register');
-  }
-  return false;
-}
-
-async function doLogout() {
-  await fetch('/api/auth/logout', { method: 'POST' });
-  showAuthView();
-}
-
-async function checkAuth() {
-  try {
-    const resp = await fetch('/api/auth/me');
-    if (resp.ok) {
-      const user = await resp.json();
-      showAppView(user.username);
-      return true;
-    }
-  } catch {}
-  showAuthView();
-  return false;
-}
-
-function showAppView(username) {
-  document.getElementById('auth-view').style.display = 'none';
-  document.getElementById('app-view').style.display = '';
-  document.getElementById('nav-username').textContent = username;
-  setDefaultTime();
-  refreshJobs();
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(refreshJobs, 5000);
-}
-
-function showAuthView() {
-  document.getElementById('auth-view').style.display = '';
-  document.getElementById('app-view').style.display = 'none';
-  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-}
-
-// ── File upload ──────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
-  applyI18n();
-  const dropzone = document.getElementById('dropzone');
-  const fileInput = document.getElementById('file-input');
-  const fileDisplay = document.getElementById('file-display');
-  dropzone.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', () => {
-    if (fileInput.files.length) fileDisplay.textContent = fileInput.files[0].name;
-  });
-  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
-  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-  dropzone.addEventListener('drop', e => {
-    e.preventDefault();
-    dropzone.classList.remove('dragover');
-    if (e.dataTransfer.files.length && e.dataTransfer.files[0].name.endsWith('.zip')) {
-      fileInput.files = e.dataTransfer.files;
-      fileDisplay.textContent = e.dataTransfer.files[0].name;
-    }
-  });
-  document.getElementById('job-form').addEventListener('submit', submitJob);
-  document.getElementById('modal').addEventListener('click', e => {
-    if (e.target.id === 'modal') closeModal();
-  });
-  checkAuth();
-});
-
-// ── Default scheduled_at ─────────────────────
-function setDefaultTime() {
-  const now = new Date(Date.now() + 2 * 60 * 1000);
-  const pad = n => String(n).padStart(2, '0');
-  const val = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  const el = document.getElementById('scheduled_at');
-  if (el) el.value = val;
-}
-
-// ── Submit ───────────────────────────────────
-async function submitJob(e) {
-  e.preventDefault();
-  const btn = document.getElementById('submit-btn');
-  const form = e.target;
-  const fd = new FormData(form);
-  btn.disabled = true; btn.textContent = t('scheduling');
-  try {
-    const resp = await fetch(API, { method: 'POST', body: fd });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({detail: resp.statusText}));
-      alert(t('error') + ': ' + (err.detail || t('unknown')));
-      return;
-    }
-    form.reset();
-    setDefaultTime();
-    document.getElementById('file-display').textContent = '';
-    await refreshJobs();
-  } finally {
-    btn.disabled = false; btn.textContent = t('scheduleJob');
-  }
-}
-
-// ── Job list ─────────────────────────────────
-function statusLabel(s) { return t('st_' + s) || s; }
-
-async function refreshJobs() {
-  const resp = await fetch(API);
-  if (resp.status === 401) { showAuthView(); return; }
-  allJobs = await resp.json();
-  renderJobs();
-}
-
-function filterJobs() { renderJobs(); }
-
-function renderJobs() {
-  const q = (document.getElementById('job-search')?.value || '').trim().toLowerCase();
-  const statusFilter = document.getElementById('job-status-filter')?.value || '';
-  let jobs = allJobs;
-  if (statusFilter) jobs = jobs.filter(j => j.status === statusFilter);
-  if (q) jobs = jobs.filter(j =>
-    (j.name || '').toLowerCase().includes(q) ||
-    (j.filename || '').toLowerCase().includes(q)
-  );
-
-  const list = document.getElementById('job-list');
-  document.getElementById('job-count').textContent = jobs.length;
-
-  if (!jobs.length) {
-    list.innerHTML = `<div class="empty"><div class="icon">📭</div><div>${q ? t('noJobsMatch') : t('noJobs')}</div></div>`;
-    return;
-  }
-
-  list.innerHTML = jobs.map(j => {
-    const scheduled = j.scheduled_at ? new Date(j.scheduled_at).toLocaleString() : '—';
-    const started = j.started_at ? new Date(j.started_at).toLocaleString() : '—';
-    return `
-      <div class="job-card" onclick="openModal('${j.id}')">
-        <div class="info">
-          <div class="name">${escapeHtml(j.name)}</div>
-          <div class="meta">
-            <span>📁 ${escapeHtml(j.filename || '')}</span>
-            <span>⏰ ${scheduled}</span>
-            ${j.started_at ? `<span>▶ ${started}</span>` : ''}
-            ${j.output_count ? `<span>📦 ${j.output_count} ${t('files')}</span>` : ''}
-          </div>
-        </div>
-        <span class="status status-${j.status}">${statusLabel(j.status)}</span>
-      </div>`;
-  }).join('');
-}
-
-// ── Modal detail ─────────────────────────────
-async function openModal(jobId) {
-  const modal = document.getElementById('modal');
-  const body = document.getElementById('modal-body');
-  const title = document.getElementById('modal-title');
-  modal.classList.add('open');
-  body.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner"></div></div>';
-  title.textContent = t('loading');
-
-  const [jobResp, logResp, outResp] = await Promise.all([
-    fetch(`${API}/${jobId}`),
-    fetch(`${API}/${jobId}/logs`),
-    fetch(`${API}/${jobId}/outputs`),
-  ]);
-  const job = await jobResp.json();
-  const logs = (await logResp.json()).logs;
-  const outputs = (await outResp.json()).outputs;
-
-  title.textContent = job.name;
-
-  let html = `
-    <div class="modal-section">
-      <div class="kv-grid">
-        <div class="kv"><span class="k">${t('status')}</span><span class="v"><span class="status status-${job.status}">${statusLabel(job.status)}</span></span></div>
-        <div class="kv"><span class="k">${t('originalFile')}</span><span class="v">${escapeHtml(job.filename || '—')}</span></div>
-        <div class="kv"><span class="k">${t('entryCmd')}</span><span class="v"><code>${escapeHtml(job.entry_command || '—')}</code></span></div>
-        <div class="kv"><span class="k">${t('maxRuntimeLabel')}</span><span class="v">${job.timeout_minutes || '—'} ${t('min')}</span></div>
-        <div class="kv"><span class="k">${t('scheduledUtc')}</span><span class="v">${job.scheduled_at ? new Date(job.scheduled_at).toLocaleString() : '—'}</span></div>
-        <div class="kv"><span class="k">${t('started')}</span><span class="v">${job.started_at ? new Date(job.started_at).toLocaleString() : '—'}</span></div>
-        <div class="kv"><span class="k">${t('finished')}</span><span class="v">${job.finished_at ? new Date(job.finished_at).toLocaleString() : '—'}</span></div>
-        <div class="kv"><span class="k">${t('outputs')}</span><span class="v">${job.output_count || 0} ${t('files')}</span></div>
-        <div class="kv"><span class="k">${t('s3Prefix')}</span><span class="v"><code>${escapeHtml(job.s3_prefix || '—')}</code></span></div>
-      </div>
-    </div>`;
-
-  if (job.status === 'pending') {
-    html += `<div class="modal-section"><button class="btn-cancel" onclick="cancelJob('${job.id}')">${t('cancelJob')}</button></div>`;
-  }
-  if (job.error) {
-    html += `<div class="modal-section"><h4>${t('error')}</h4><div class="error-box">${escapeHtml(job.error)}</div></div>`;
-  }
-
-  const logContent = logs || `<i style="color:var(--text-dim)">${t('noLogs')}</i>`;
-  html += `<div class="modal-section"><h4>${t('logs')}</h4><div class="log-box">${logs ? escapeHtml(logs) : `<span style="color:var(--text-dim)">${t('noLogs')}</span>`}</div></div>`;
-
-  if (outputs.length) {
-    html += `<div class="modal-section"><h4>${t('outputArtifacts')}</h4><ul class="output-list">`;
-    outputs.forEach(o => {
-      const downloadUrl = `/s3/${o.key}`;
-      const fname = o.key.split('/').pop();
-      html += `<li><a href="${downloadUrl}" download>${escapeHtml(fname)}</a><span class="size">${formatSize(o.size)}</span></li>`;
-    });
-    html += `</ul></div>`;
-  }
-
-  body.innerHTML = html;
-}
-
-function closeModal() {
-  document.getElementById('modal').classList.remove('open');
-}
-
-async function cancelJob(jobId) {
-  if (!confirm(t('cancelConfirm'))) return;
-  const resp = await fetch(`${API}/${jobId}`, { method: 'DELETE' });
-  if (resp.ok) { closeModal(); await refreshJobs(); }
-  else { const err = await resp.json().catch(()=>({})); alert(err.detail || t('failed')); }
-}
-
-// ── Utils ────────────────────────────────────
-function escapeHtml(s) {
-  if (!s) return '';
-  const div = document.createElement('div');
-  div.textContent = String(s);
-  return div.innerHTML;
-}
-function formatSize(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
-  return (bytes/1024/1024).toFixed(1) + ' MB';
-}
-</script>
+<script type="module" src="/src/main.ts"></script>
 </body>
 </html>

@@ -1,0 +1,207 @@
+import io
+import socket
+
+import pytest
+
+FUTURE = "2099-01-01T00:00"
+
+
+def _s3_reachable(host="127.0.0.1", port=9000, timeout=3):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+pytestmark = pytest.mark.skipif(not _s3_reachable(), reason="S3 unreachable")
+
+
+@pytest.fixture
+def client():
+    from app.main import app
+    from fastapi.testclient import TestClient
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def authed_client(client):
+    client.post("/api/auth/register", data={"username": "alice", "password": "pass123"})
+    return client
+
+
+def _submit_job(client, make_zip, name="test job"):
+    zip_bytes = make_zip({"main.py": "print('hello')"})
+    resp = client.post(
+        "/api/jobs",
+        data={"name": name, "scheduled_at": FUTURE, "timeout_minutes": "5"},
+        files={"file": ("project.zip", io.BytesIO(zip_bytes), "application/zip")},
+    )
+    assert resp.status_code == 200
+    return resp.json()["id"]
+
+
+# ── Auth ──────────────────────────────────────
+
+class TestAuth:
+    def test_register_sets_cookie(self, client):
+        resp = client.post("/api/auth/register", data={"username": "newuser", "password": "pass123"})
+        assert resp.status_code == 200
+        assert resp.json()["username"] == "newuser"
+        assert "session" in resp.cookies
+
+    def test_register_duplicate(self, authed_client):
+        resp = authed_client.post("/api/auth/register", data={"username": "alice", "password": "pass123"})
+        assert resp.status_code == 409
+
+    def test_register_short_username(self, client):
+        resp = client.post("/api/auth/register", data={"username": "a", "password": "pass123"})
+        assert resp.status_code == 400
+
+    def test_register_short_password(self, client):
+        resp = client.post("/api/auth/register", data={"username": "bob", "password": "12345"})
+        assert resp.status_code == 400
+
+    def test_login_success(self, client):
+        client.post("/api/auth/register", data={"username": "charlie", "password": "pass123"})
+        client.post("/api/auth/logout")
+        resp = client.post("/api/auth/login", data={"username": "charlie", "password": "pass123"})
+        assert resp.status_code == 200
+
+    def test_login_wrong_password(self, client):
+        client.post("/api/auth/register", data={"username": "dave", "password": "pass123"})
+        client.post("/api/auth/logout")
+        resp = client.post("/api/auth/login", data={"username": "dave", "password": "wrong"})
+        assert resp.status_code == 401
+
+    def test_me_requires_auth(self, client):
+        resp = client.get("/api/auth/me")
+        assert resp.status_code == 401
+
+    def test_me_returns_user(self, authed_client):
+        resp = authed_client.get("/api/auth/me")
+        assert resp.status_code == 200
+        assert resp.json()["username"] == "alice"
+
+    def test_logout_clears_session(self, authed_client):
+        authed_client.post("/api/auth/logout")
+        assert authed_client.get("/api/auth/me").status_code == 401
+
+
+# ── Jobs ──────────────────────────────────────
+
+class TestJobs:
+    def test_submit(self, authed_client, make_zip):
+        job_id = _submit_job(authed_client, make_zip, "my job")
+        assert job_id
+
+    def test_list_after_submit(self, authed_client, make_zip):
+        _submit_job(authed_client, make_zip, "job A")
+        _submit_job(authed_client, make_zip, "job B")
+        resp = authed_client.get("/api/jobs")
+        assert resp.status_code == 200
+        jobs = resp.json()
+        assert len(jobs) == 2
+        assert jobs[0]["name"] == "job B"  # newest first
+
+    def test_get_detail(self, authed_client, make_zip):
+        job_id = _submit_job(authed_client, make_zip)
+        resp = authed_client.get(f"/api/jobs/{job_id}")
+        assert resp.status_code == 200
+        assert resp.json()["id"] == job_id
+
+    def test_get_nonexistent(self, authed_client):
+        resp = authed_client.get("/api/jobs/nonexistent-id")
+        assert resp.status_code == 404
+
+    def test_cancel_pending(self, authed_client, make_zip):
+        job_id = _submit_job(authed_client, make_zip)
+        resp = authed_client.delete(f"/api/jobs/{job_id}")
+        assert resp.status_code == 200
+        job = authed_client.get(f"/api/jobs/{job_id}").json()
+        assert job["status"] == "cancelled"
+
+    def test_reject_non_zip(self, authed_client):
+        resp = authed_client.post(
+            "/api/jobs",
+            data={"name": "bad", "scheduled_at": FUTURE},
+            files={"file": ("notzip.txt", io.BytesIO(b"nope"), "text/plain")},
+        )
+        assert resp.status_code == 400
+
+    def test_submit_requires_auth(self, client, make_zip):
+        zip_bytes = make_zip({"main.py": "print(1)"})
+        resp = client.post(
+            "/api/jobs",
+            data={"name": "x", "scheduled_at": FUTURE},
+            files={"file": ("p.zip", io.BytesIO(zip_bytes), "application/zip")},
+        )
+        assert resp.status_code == 401
+
+    def test_user_isolation(self, authed_client, client, make_zip):
+        job_id = _submit_job(authed_client, make_zip)
+        # Register as different user
+        client.post("/api/auth/register", data={"username": "eve", "password": "pass123"})
+        # Eve can't see Alice's job
+        assert client.get(f"/api/jobs/{job_id}").status_code == 404
+        assert client.get(f"/api/jobs").json() == []
+
+
+# ── S3-backed endpoints ───────────────────────
+
+class TestS3Endpoints:
+    def _setup_job_with_s3_data(self, authed_client, make_zip):
+        """Submit a job, then inject S3 data (logs + outputs)."""
+        from app.main import storage
+        job_id = _submit_job(authed_client, make_zip)
+        storage.upload_bytes(f"jobs/{job_id}/logs/run.log", b"=== python main.py ===\nhello world\n")
+        storage.upload_bytes(f"jobs/{job_id}/output/result.txt", b"result data")
+        storage.upload_bytes(f"jobs/{job_id}/output/data/final.csv", b"a,b,c\n1,2,3")
+        return job_id
+
+    def test_get_logs(self, authed_client, make_zip):
+        job_id = self._setup_job_with_s3_data(authed_client, make_zip)
+        resp = authed_client.get(f"/api/jobs/{job_id}/logs")
+        assert resp.status_code == 200
+        assert "hello world" in resp.json()["logs"]
+
+    def test_get_logs_empty(self, authed_client, make_zip):
+        job_id = _submit_job(authed_client, make_zip)
+        resp = authed_client.get(f"/api/jobs/{job_id}/logs")
+        assert resp.status_code == 200
+        assert resp.json()["logs"] == ""
+
+    def test_download_logs(self, authed_client, make_zip):
+        job_id = self._setup_job_with_s3_data(authed_client, make_zip)
+        resp = authed_client.get(f"/api/jobs/{job_id}/logs/download")
+        assert resp.status_code == 200
+        assert b"hello world" in resp.content
+        assert "attachment" in resp.headers.get("content-disposition", "")
+
+    def test_list_outputs(self, authed_client, make_zip):
+        job_id = self._setup_job_with_s3_data(authed_client, make_zip)
+        resp = authed_client.get(f"/api/jobs/{job_id}/outputs")
+        assert resp.status_code == 200
+        outputs = resp.json()["outputs"]
+        assert len(outputs) == 2
+        for o in outputs:
+            assert "download_url" in o
+            assert o["download_url"].startswith(f"/api/jobs/{job_id}/download/")
+
+    def test_download_output(self, authed_client, make_zip):
+        job_id = self._setup_job_with_s3_data(authed_client, make_zip)
+        resp = authed_client.get(f"/api/jobs/{job_id}/download/output/result.txt")
+        assert resp.status_code == 200
+        assert resp.content == b"result data"
+
+    def test_download_output_nested(self, authed_client, make_zip):
+        job_id = self._setup_job_with_s3_data(authed_client, make_zip)
+        resp = authed_client.get(f"/api/jobs/{job_id}/download/output/data/final.csv")
+        assert resp.status_code == 200
+        assert resp.content == b"a,b,c\n1,2,3"
+
+    def test_download_nonexistent(self, authed_client, make_zip):
+        job_id = _submit_job(authed_client, make_zip)
+        resp = authed_client.get(f"/api/jobs/{job_id}/download/output/nope.txt")
+        assert resp.status_code == 404
