@@ -116,6 +116,25 @@ class TestJobs:
         resp = authed_client.get("/api/jobs/nonexistent-id")
         assert resp.status_code == 404
 
+    def test_edit_pending(self, authed_client):
+        job_id = _submit_job(authed_client)
+        resp = authed_client.patch(f"/api/jobs/{job_id}", data={
+            "name": "renamed", "gpus": "0", "timeout_minutes": "99",
+            "scheduled_at": "2099-03-01T10:00"})
+        assert resp.status_code == 200
+        job = resp.json()
+        assert job["name"] == "renamed"
+        assert job["timeout_minutes"] == 99
+        from datetime import datetime, timezone
+        assert datetime.fromisoformat(job["scheduled_at"]) == \
+            datetime.fromisoformat("2099-03-01T10:00").astimezone(timezone.utc)
+
+    def test_edit_non_pending_rejected(self, authed_client):
+        job_id = _submit_job(authed_client)
+        authed_client.delete(f"/api/jobs/{job_id}")  # -> cancelled
+        resp = authed_client.patch(f"/api/jobs/{job_id}", data={"name": "x"})
+        assert resp.status_code == 409
+
     def test_cancel_pending(self, authed_client, make_zip):
         job_id = _submit_job(authed_client, make_zip)
         resp = authed_client.delete(f"/api/jobs/{job_id}")

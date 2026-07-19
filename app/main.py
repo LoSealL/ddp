@@ -20,7 +20,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
 
-EXECUTOR_MODE = os.environ.get("DDP_EXECUTOR", "mock")
+EXECUTOR_MODE = os.environ.get("DDP_EXECUTOR", "k8s")
 
 storage = Storage()
 if EXECUTOR_MODE == "k8s":
@@ -36,13 +36,15 @@ async def lifespan(app: FastAPI):
     db.init_db()
     # Reschedule pending jobs after restart
     for job in db.list_jobs():
-        if job["status"] == "pending":
+        if job["status"] in ("pending", "initializing"):
             dt = datetime.fromisoformat(job["scheduled_at"])
             trigger = DateTrigger(run_date=dt)
             scheduler.add_job(
                 executor.execute, trigger, args=[job["id"]], id=job["id"],
                 replace_existing=True,
             )
+            if job["status"] == "initializing" and hasattr(executor, "wait_ready"):
+                asyncio.create_task(executor.wait_ready(job["id"]))
         elif job["status"] == "running" and hasattr(executor, "watch"):
             # k8s jobs keep running across backend restarts; resume watching
             asyncio.create_task(executor.watch(job["id"]))
@@ -125,8 +127,12 @@ async def me(user: dict = Depends(auth.get_current_user)):
         image_list = images.list_images()
     except Exception:
         image_list = []
+    params = db.get_all_params()
     return {"id": user["id"], "username": user["username"], "is_admin": user.get("is_admin", 0),
-            "mode": EXECUTOR_MODE, "gpu_quota": quota, "images": image_list}
+            "mode": EXECUTOR_MODE, "gpu_quota": quota, "images": image_list,
+            "time_window_start": params.get("time_window_start", "00:00"),
+            "time_window_end": params.get("time_window_end", "23:59"),
+            "gpu_default_quota": params.get("gpu_default_quota", 0)}
 
 
 @app.get("/api/gpus")
@@ -142,6 +148,14 @@ async def list_gpus(user: dict = Depends(auth.get_current_user)):
     return {"gpus": gpus}
 
 
+def _validate_output_path(p: str) -> str:
+    p = (p or "").strip() or "output"
+    full = os.path.normpath(p if os.path.isabs(p) else os.path.join("/workspace", p))
+    if not full.startswith("/workspace/"):
+        raise HTTPException(400, "output_path must resolve to a directory inside /workspace")
+    return p
+
+
 # ── Jobs (protected) ─────────────────────────────────
 
 @app.post("/api/jobs")
@@ -154,7 +168,9 @@ async def create_job(
     timeout_minutes: int = Form(60),
     gpus: int = Form(0),
     gpu_mem_mb: int | None = Form(None),
+    output_path: str = Form("output"),
 ):
+    output_path = _validate_output_path(output_path)
     try:
         known = images.list_images()
     except Exception:
@@ -175,9 +191,12 @@ async def create_job(
 
     job_id = str(uuid.uuid4())
 
-    # Parse local datetime, check time window, convert to UTC
+    # Parse local datetime, check time window, convert to UTC (admins bypass)
     local_dt = datetime.fromisoformat(scheduled_at)
-    adjusted_dt = timecheck.check_scheduled_time(local_dt)
+    if user.get("is_admin"):
+        adjusted_dt = local_dt
+    else:
+        adjusted_dt = timecheck.check_scheduled_time(local_dt)
     was_queued = adjusted_dt != local_dt
 
     dt_utc = adjusted_dt.astimezone(timezone.utc)
@@ -193,9 +212,14 @@ async def create_job(
             db.log_event("ERROR", "job", f"Debug env prepare failed: {e}", user_id=user["id"])
             raise HTTPException(502, f"Failed to create debug environment: {e}")
 
+    initializing = bool(ssh_info)
     db.create_job(job_id, user["id"], name, image, entry_command, scheduled_utc,
                   timeout_minutes, gpus=gpus, gpu_mem_mb=gpu_mem_mb if gpus else None,
-                  ssh_port=ssh_info.get("ssh_port"), ssh_password=ssh_info.get("ssh_password"))
+                  ssh_port=ssh_info.get("ssh_port"), ssh_password=ssh_info.get("ssh_password"),
+                  status="initializing" if initializing else "pending",
+                  output_path=output_path)
+    if initializing:
+        asyncio.create_task(executor.wait_ready(job_id))
 
     db.log_event("INFO", "job", f"Job submitted: {name} ({job_id})", user_id=user["id"])
     if was_queued:
@@ -207,7 +231,8 @@ async def create_job(
         args=[job_id], id=job_id, replace_existing=True,
     )
 
-    return {"id": job_id, "status": "pending", "queued": was_queued, **ssh_info}
+    return {"id": job_id, "status": "initializing" if initializing else "pending",
+            "queued": was_queued, **ssh_info}
 
 
 @app.get("/api/jobs")
@@ -280,12 +305,65 @@ async def download_file(job_id: str, file_path: str, user: dict = Depends(auth.g
     )
 
 
+@app.patch("/api/jobs/{job_id}")
+async def update_pending_job(job_id: str, user: dict = Depends(auth.get_current_user),
+                             name: str = Form(None), entry_command: str = Form(None),
+                             scheduled_at: str = Form(None), timeout_minutes: int = Form(None),
+                             gpus: int = Form(None), gpu_mem_mb: int | None = Form(None),
+                             output_path: str = Form(None)):
+    job = db.get_job(job_id)
+    if not job or job.get("user_id") != user["id"]:
+        raise HTTPException(404)
+    if job["status"] != "pending":
+        raise HTTPException(409, "Only pending jobs can be edited")
+
+    updates = {}
+    if name is not None and name.strip():
+        updates["name"] = name.strip()
+    if entry_command is not None and entry_command.strip():
+        updates["entry_command"] = entry_command.strip()
+    if timeout_minutes is not None:
+        if not 1 <= timeout_minutes <= 1440:
+            raise HTTPException(400, "timeout_minutes must be 1-1440")
+        updates["timeout_minutes"] = timeout_minutes
+    if gpus is not None:
+        if gpus < 0:
+            raise HTTPException(400, "gpus must be >= 0")
+        full_user = db.get_user_by_id(user["id"]) or {}
+        quota = full_user.get("gpu_quota_override")
+        if quota is None:
+            quota = db.get_param("gpu_default_quota") or 0
+        if gpus > quota:
+            raise HTTPException(403, f"GPU quota exceeded: requested {gpus}, allowed {quota}")
+        updates["gpus"] = gpus
+        updates["gpu_mem_mb"] = gpu_mem_mb if gpus else None
+    elif gpu_mem_mb is not None and job.get("gpus"):
+        updates["gpu_mem_mb"] = gpu_mem_mb
+    if scheduled_at is not None:
+        local_dt = datetime.fromisoformat(scheduled_at)
+        if not user.get("is_admin"):
+            local_dt = timecheck.check_scheduled_time(local_dt)
+        dt_utc = local_dt.astimezone(timezone.utc)
+        updates["scheduled_at"] = dt_utc.isoformat()
+        scheduler.add_job(
+            executor.execute, DateTrigger(run_date=dt_utc),
+            args=[job_id], id=job_id, replace_existing=True,
+        )
+    if output_path is not None:
+        updates["output_path"] = _validate_output_path(output_path)
+    if not updates:
+        raise HTTPException(400, "Nothing to update")
+    db.update_job(job_id, **updates)
+    db.log_event("INFO", "job", f"Job edited: {job_id} {sorted(updates)}", user_id=user["id"])
+    return db.get_job(job_id)
+
+
 @app.delete("/api/jobs/{job_id}")
 async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
     job = db.get_job(job_id)
     if not job or job.get("user_id") != user["id"]:
         raise HTTPException(404)
-    if job["status"] == "pending":
+    if job["status"] in ("pending", "initializing"):
         try:
             scheduler.remove_job(job_id)
         except Exception:
@@ -317,5 +395,6 @@ async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
 async def index():
     index_html = DIST_DIR / "index.html"
     if index_html.exists():
-        return index_html.read_text(encoding="utf-8")
+        return HTMLResponse(index_html.read_text(encoding="utf-8"),
+                            headers={"Cache-Control": "no-cache"})
     return "<h1>Frontend not built</h1><p>Run <code>cd frontend && bun install && bun run build</code></p>"

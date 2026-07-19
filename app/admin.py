@@ -77,6 +77,11 @@ async def delete_user_endpoint(user_id: int, user: dict = Depends(auth.require_a
         raise HTTPException(403, "Cannot delete the last admin")
 
     db.delete_user(user_id)
+    try:
+        from .k8s_executor import K8sExecutor
+        await K8sExecutor(storage).delete_user_workspace(user_id)
+    except Exception as e:
+        db.log_event("WARNING", "admin", f"Workspace cleanup failed for user {user_id}: {e}")
     db.log_event("WARNING", "admin", f"User {target['username']} deleted", user_id=user["id"])
     return {"ok": True}
 
@@ -133,7 +138,7 @@ async def list_admin_logs(
 @router.get("/monitoring")
 async def get_monitoring(user: dict = Depends(auth.require_admin)):
     all_jobs = db.list_jobs()
-    job_counts = {s: 0 for s in ("pending", "running", "done", "failed", "timeout", "cancelled")}
+    job_counts = {s: 0 for s in ("initializing", "pending", "running", "done", "failed", "timeout", "cancelled")}
     for job in all_jobs:
         if job["status"] in job_counts:
             job_counts[job["status"]] += 1

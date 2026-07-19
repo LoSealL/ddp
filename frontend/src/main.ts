@@ -1,7 +1,7 @@
 import './style.css';
 
 // ── Types ────────────────────────────────────
-type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
+type JobStatus = 'initializing' | 'pending' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
 type Lang = 'en' | 'zh';
 
 interface Job {
@@ -21,6 +21,7 @@ interface Job {
   error: string | null;
   gpus: number;
   gpu_mem_mb: number | null;
+  output_path: string;
   ssh_port: number | null;
   ssh_password: string | null;
 }
@@ -66,7 +67,8 @@ const I18N: Record<Lang, Record<string, string>> = {
     dropzoneHint: "Click or drag a .zip here",
     entryCommand: "Entry Command", entryCommandHint: "Runs in /workspace of the GPU pod at the scheduled time.",
     image: "Image", imageHint: "Base environment shared by the debug pod and the GPU run.",
-    sshAccess: "SSH Access (debug pod)", sshCmd: "Command", sshPassword: "Password", sshHint: "Everything you install/change in /workspace carries over to the GPU run.",
+    outputPath: "Output Dir", outputPathHint: "Absolute path, or relative to /workspace. Harvested to S3 after the run.",
+    sshAccess: "SSH Access (debug pod)", sshCmd: "Command", sshPassword: "Password", sshHint: "Your /workspace persists and is shared across all your jobs. Files in output/ are harvested to S3 after each run.",
     scheduledStart: "Scheduled Start (local time)", scheduledStartHint: "Platform fires within ~30s of this time.",
     maxRuntime: "Max Runtime (minutes)", maxRuntimeHint: "Hard kill at this point. Outputs collected up to then.",
     gpus: "GPUs", gpusHint: "vGPU slices via HAMi. 0 = CPU only.",
@@ -82,10 +84,12 @@ const I18N: Record<Lang, Record<string, string>> = {
     maxRuntimeLabel: "Max Runtime", scheduledUtc: "Scheduled (UTC)",
     started: "Started", finished: "Finished", outputs: "Outputs", s3Prefix: "S3 Prefix",
     cancelJob: "Cancel Job", cancelConfirm: "Cancel this job?",
+    editJob: "Edit", saved: "Saved.",
     deleteJob: "Delete", deleteConfirm: "Delete this job and all its resources?",
     logs: "Logs", noLogs: "No logs yet.", outputArtifacts: "Output Artifacts",
     downloadLogs: "Download Logs", downloadCode: "Download Code",
     failed: "Failed", files: "file(s)", min: "min",
+    st_initializing: "initializing",
     st_pending: "pending", st_running: "running", st_done: "done",
     st_failed: "failed", st_timeout: "timeout", st_cancelled: "cancelled",
     langLabel: "中文",
@@ -127,7 +131,8 @@ const I18N: Record<Lang, Record<string, string>> = {
     dropzoneHint: "点击或拖拽 .zip 文件到此处",
     entryCommand: "入口命令", entryCommandHint: "调度时间到时在 GPU Pod 的 /workspace 中执行。",
     image: "镜像", imageHint: "调试 Pod 与 GPU 运行共用同一基础环境。",
-    sshAccess: "SSH 访问（调试 Pod）", sshCmd: "命令", sshPassword: "密码", sshHint: "你在 /workspace 里装的所有东西都会带到 GPU 运行环境。",
+    outputPath: "产物目录", outputPathHint: "绝对路径，或相对 /workspace。运行结束后收割到 S3。",
+    sshAccess: "SSH 访问（调试 Pod）", sshCmd: "命令", sshPassword: "密码", sshHint: "/workspace 在你名下所有作业间持久共享。output/ 里的文件会在每次运行后收割到 S3。",
     scheduledStart: "计划启动时间 (本地)", scheduledStartHint: "平台在此时间后约 30 秒内触发。",
     maxRuntime: "最大运行时长 (分钟)", maxRuntimeHint: "超时强制终止，已生成的产物仍会收集。",
     gpus: "GPU 数量", gpusHint: "HAMi vGPU 切分。0 = 仅用 CPU。",
@@ -143,10 +148,12 @@ const I18N: Record<Lang, Record<string, string>> = {
     maxRuntimeLabel: "最大运行时长", scheduledUtc: "计划时间 (UTC)",
     started: "开始时间", finished: "结束时间", outputs: "产物数量", s3Prefix: "S3 路径",
     cancelJob: "取消作业", cancelConfirm: "确定取消此作业？",
+    editJob: "修改", saved: "已保存。",
     deleteJob: "删除", deleteConfirm: "删除此作业及所有相关资源？",
     logs: "日志", noLogs: "暂无日志。", outputArtifacts: "产物文件",
     downloadLogs: "下载日志", downloadCode: "下载代码",
     failed: "操作失败", files: "个文件", min: "分钟",
+    st_initializing: "初始化中",
     st_pending: "等待中", st_running: "运行中", st_done: "已完成",
     st_failed: "失败", st_timeout: "超时", st_cancelled: "已取消",
     langLabel: "EN",
@@ -202,7 +209,7 @@ function toggleLang(): void {
   LANG = LANG === 'en' ? 'zh' : 'en';
   localStorage.setItem('ddp-lang', LANG);
   applyI18n();
-  if ($('app-view').style.display !== 'none') renderJobs();
+  if ($('app-view').style.display !== 'none') { renderJobs(); refreshGpus(); }
 }
 
 // ── State ────────────────────────────────────
@@ -213,6 +220,10 @@ let isAdmin = false;
 let gpuQuota = 0;
 let execMode = 'mock';
 let imageChoices: string[] = [];
+let windowStart = '00:00';
+let windowEnd = '23:59';
+let gpuDefault = 0;
+let gpuTimer: ReturnType<typeof setInterval> | null = null;
 let adminViewActive = false;
 let adminTab: 'users' | 'params' | 'logs' | 'monitor' = 'users';
 let logsPage = 0;
@@ -286,11 +297,15 @@ async function checkAuth(): Promise<boolean> {
   try {
     const resp = await fetch('/api/auth/me');
     if (resp.ok) {
-      const user: { id: number; username: string; is_admin: number; mode?: string; gpu_quota?: number; images?: string[] } = await resp.json();
+      const user: { id: number; username: string; is_admin: number; mode?: string; gpu_quota?: number; images?: string[];
+                    time_window_start?: string; time_window_end?: string; gpu_default_quota?: number } = await resp.json();
       isAdmin = !!user.is_admin;
       execMode = user.mode || 'mock';
       gpuQuota = user.gpu_quota ?? 0;
       if (user.images?.length) imageChoices = user.images;
+      windowStart = user.time_window_start || windowStart;
+      windowEnd = user.time_window_end || windowEnd;
+      gpuDefault = user.gpu_default_quota ?? 0;
       showAppView(user.username);
       return true;
     }
@@ -313,8 +328,6 @@ function showAppView(username: string): void {
     adminBtn.style.display = isAdmin ? '' : 'none';
     adminBtn.textContent = t('admin');
   }
-  const badge = $('mode-badge');
-  badge.style.display = execMode === 'mock' ? '' : 'none';
   const gpusInput = $<HTMLInputElement>('gpus');
   gpusInput.max = String(gpuQuota);
   $('image-select').innerHTML = imageChoices.map(i => `<option value="${i}">${i}</option>`).join('');
@@ -322,13 +335,16 @@ function showAppView(username: string): void {
   refreshJobs();
   refreshGpus();
   if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => { refreshJobs(); refreshGpus(); }, 5000);
+  refreshTimer = setInterval(refreshJobs, 5000);
+  if (gpuTimer) clearInterval(gpuTimer);
+  gpuTimer = setInterval(refreshGpus, 60000);
 }
 
 function showAuthView(): void {
   $('auth-view').style.display = '';
   $('app-view').style.display = 'none';
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (gpuTimer) { clearInterval(gpuTimer); gpuTimer = null; }
 }
 
 // ── Admin panel ──────────────────────────────
@@ -573,12 +589,34 @@ async function renderAdminMonitor(): Promise<void> {
     </div>`;
 }
 
-// ── Default scheduled_at ─────────────────────
+// ── Form defaults from admin config ──────────
+function _winMinutes(): { s: number; e: number } {
+  const [sh, sm] = windowStart.split(':').map(Number);
+  const [eh, em] = windowEnd.split(':').map(Number);
+  return { s: sh * 60 + sm, e: eh * 60 + em };
+}
+
 function setDefaultTime(): void {
-  const now = new Date(Date.now() + 2 * 60 * 1000);
+  const { s, e } = _winMinutes();
+  const now = new Date();
+  const t = now.getHours() * 60 + now.getMinutes();
+  const inWindow = s <= e ? (t >= s && t < e) : (t >= s || t < e);
+  let d: Date;
+  if (inWindow) {
+    d = new Date(Date.now() + 2 * 60 * 1000);
+  } else {
+    d = new Date(now);
+    d.setHours(Math.floor(s / 60), s % 60, 0, 0);
+    if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
+  }
   const pad = (n: number) => String(n).padStart(2, '0');
-  const val = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const val = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   $<HTMLInputElement>('scheduled_at').value = val;
+  // max runtime defaults to the full window length
+  const dur = ((e - s) + 1440) % 1440 || 1440;
+  $<HTMLInputElement>('timeout_minutes').value = String(dur);
+  $<HTMLInputElement>('gpus').value = String(Math.min(gpuDefault, gpuQuota));
+  $('gpu-mem-field').style.display = Math.min(gpuDefault, gpuQuota) > 0 ? '' : 'none';
 }
 
 // ── Submit ───────────────────────────────────
@@ -726,7 +764,7 @@ async function openModal(jobId: string): Promise<void> {
       </div>
     </div>`;
 
-  if (job.ssh_port && (job.status === 'pending' || job.status === 'running')) {
+  if (job.ssh_port && (job.status === 'initializing' || job.status === 'pending' || job.status === 'running')) {
     const cmd = `ssh root@${location.hostname} -p ${job.ssh_port}`;
     html += `
       <div class="modal-section"><h4>${t('sshAccess')}</h4>
@@ -737,14 +775,16 @@ async function openModal(jobId: string): Promise<void> {
         <div class="hint" style="margin-top:8px">${t('sshHint')}</div>
       </div>`;
   }
-  if (job.status === 'pending') {
-    html += `<div class="modal-section"><button class="btn-cancel" data-job-id="${job.id}">${t('cancelJob')}</button></div>`;
+  if (job.status === 'pending' || job.status === 'initializing' || job.status === 'running') {
+    html += `<div class="modal-section">
+      ${job.status === 'pending' ? `<button class="btn-cancel" data-edit-id="${job.id}">${t('editJob')}</button>` : ''}
+      <button class="btn-cancel" data-job-id="${job.id}">${t('cancelJob')}</button></div>`;
   }
   if (job.error) {
     html += `<div class="modal-section"><h4>${t('error')}</h4><div class="error-box">${escapeHtml(job.error)}</div></div>`;
   }
 
-  html += `<div class="modal-section"><h4>${t('logs')}${logs ? ` <button class="btn-cancel" data-log-download="${job.id}">${t('downloadLogs')}</button>` : ''}</h4><div class="log-box">${logs ? escapeHtml(logs) : `<span style="color:var(--text-dim)">${t('noLogs')}</span>`}</div></div>`;
+  html += `<div class="modal-section"><h4>${t('logs')}${logs ? ` <button class="btn-cancel" data-log-download="${job.id}">${t('downloadLogs')}</button>` : ''}</h4><div class="log-box">${logs ? ansiToHtml(logs) : `<span style="color:var(--text-dim)">${t('noLogs')}</span>`}</div></div>`;
 
   if (outputs.length) {
     html += `<div class="modal-section"><h4>${t('outputArtifacts')}</h4><ul class="output-list">`;
@@ -756,6 +796,45 @@ async function openModal(jobId: string): Promise<void> {
   }
 
   body.innerHTML = html;
+}
+
+// ── Edit pending job ─────────────────────────
+function toLocalInput(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function showEditForm(jobId: string): void {
+  const job = allJobs.find(j => j.id === jobId);
+  if (!job) return;
+  $('modal-body').innerHTML = `
+    <form id="edit-form" data-job-id="${job.id}">
+      <div class="field"><label>${t('jobName')}</label><input name="name" value="${escapeHtml(job.name)}" required /></div>
+      <div class="field"><label>${t('entryCommand')}</label><input name="entry_command" value="${escapeHtml(job.entry_command)}" required /></div>
+      <div class="field"><label>${t('scheduledStart')}</label><input type="datetime-local" name="scheduled_at" value="${toLocalInput(job.scheduled_at)}" required /></div>
+      <div class="field"><label>${t('maxRuntime')}</label><input type="number" name="timeout_minutes" value="${job.timeout_minutes}" min="1" max="1440" /></div>
+      <div class="field"><label>${t('outputPath')}</label><input name="output_path" value="${escapeHtml(job.output_path || 'output')}" /></div>
+      <div class="field"><label>${t('gpus')}</label><input type="number" name="gpus" value="${job.gpus}" min="0" max="${gpuQuota}" /></div>
+      <div class="field"><label>${t('gpuMem')}</label><input type="number" name="gpu_mem_mb" value="${job.gpu_mem_mb ?? ''}" min="0" step="1024" /></div>
+      <button type="submit" class="btn-submit">${t('save')}</button>
+    </form>`;
+}
+
+async function saveEdit(e: SubmitEvent): Promise<void> {
+  e.preventDefault();
+  const form = e.target as HTMLFormElement;
+  const jobId = form.dataset.jobId!;
+  const fd = new FormData(form);
+  if (!(fd.get('gpu_mem_mb') as string).trim()) fd.delete('gpu_mem_mb');
+  const resp = await fetch(`${API}/${jobId}`, { method: 'PATCH', body: fd });
+  if (resp.ok) {
+    await refreshJobs();
+    openModal(jobId);
+  } else {
+    const err = await resp.json().catch(() => ({} as Record<string, string>));
+    alert(err.detail || t('failed'));
+  }
 }
 
 function closeModal(): void {
@@ -774,6 +853,52 @@ async function deleteJob(jobId: string): Promise<void> {
   const resp = await fetch(`${API}/${jobId}`, { method: 'DELETE' });
   if (resp.ok) { closeModal(); await refreshJobs(); }
   else { const err = await resp.json().catch(() => ({} as Record<string, string>)); alert(err.detail || t('failed')); }
+}
+
+// ── ANSI color rendering ─────────────────────
+const ANSI_COLORS: Record<number, string> = {
+  30: '#6b7280', 31: '#f87171', 32: '#4ade80', 33: '#facc15',
+  34: '#60a5fa', 35: '#e879f9', 36: '#22d3ee', 37: '#e5e5e5',
+  90: '#9ca3af', 91: '#fca5a5', 92: '#86efac', 93: '#fde047',
+  94: '#93c5fd', 95: '#f0abfc', 96: '#67e8f9', 97: '#ffffff',
+};
+
+function ansiToHtml(src: string): string {
+  let out = '';
+  let style = '';
+  let buf = '';
+  const flush = () => {
+    if (!buf) return;
+    const esc = escapeHtml(buf);
+    out += style ? `<span style="${style}">${esc}</span>` : esc;
+    buf = '';
+  };
+  let i = 0;
+  while (i < src.length) {
+    if (src[i] === '\x1b') {
+      const m = /^\x1b\[([0-9;]*)m/.exec(src.slice(i));
+      if (m) {
+        flush();
+        for (const p of m[1].split(';')) {
+          const n = parseInt(p || '0', 10);
+          if (n === 0) style = '';
+          else if (n === 1) style += 'font-weight:600;';
+          else if (ANSI_COLORS[n]) {
+            style = style.replace(/color:[^;]+;?/g, '') + `color:${ANSI_COLORS[n]};`;
+          }
+        }
+        i += m[0].length;
+        continue;
+      }
+      const m2 = /^\x1b(\[[0-9;?]*[A-Za-z]|\][^\x07]*\x07|.)/.exec(src.slice(i));
+      i += m2 ? m2[0].length : 1;  // drop unknown escapes/control seqs
+      continue;
+    }
+    const c = src[i++];
+    if (c >= ' ' || c === '\n' || c === '\t') buf += c;  // drop control chars
+  }
+  flush();
+  return out;
 }
 
 // ── Utils ────────────────────────────────────
@@ -819,12 +944,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('modal-body').addEventListener('click', e => {
     const btn = (e.target as HTMLElement).closest('button') as HTMLElement | null;
+    if (btn?.dataset.editId) { showEditForm(btn.dataset.editId); return; }
     if (btn?.dataset.jobId) cancelJob(btn.dataset.jobId);
     if (btn?.dataset.logDownload) {
       const a = document.createElement('a');
       a.href = `${API}/${btn.dataset.logDownload}/logs/download`;
       a.click();
     }
+  });
+
+  $('modal-body').addEventListener('submit', e => {
+    if ((e.target as HTMLFormElement).id === 'edit-form') saveEdit(e as SubmitEvent);
   });
 
   // Admin panel handlers

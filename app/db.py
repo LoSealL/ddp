@@ -88,6 +88,10 @@ def init_db():
         except sqlite3.OperationalError:
             pass
     try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN output_path TEXT NOT NULL DEFAULT 'output'")
+    except sqlite3.OperationalError:
+        pass
+    try:
         conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
         pass
@@ -118,15 +122,16 @@ def init_db():
 
 
 def create_job(job_id, user_id, name, image, entry_command, scheduled_at, timeout_minutes,
-               gpus=0, gpu_mem_mb=None, ssh_port=None, ssh_password=None):
+               gpus=0, gpu_mem_mb=None, ssh_port=None, ssh_password=None, status="pending",
+               output_path="output"):
     now = datetime.now(timezone.utc).isoformat()
     conn = get_db()
     conn.execute("""
         INSERT INTO jobs (id, user_id, name, filename, image, entry_command, scheduled_at, timeout_minutes,
-                          gpus, gpu_mem_mb, ssh_port, ssh_password, status, created_at)
-        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, created_at)
+        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (job_id, user_id, name, image, entry_command, scheduled_at, timeout_minutes,
-          gpus, gpu_mem_mb, ssh_port, ssh_password, now))
+          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, now))
     conn.commit()
     conn.close()
 

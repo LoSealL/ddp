@@ -43,32 +43,51 @@ class K8sExecutor:
     def _labels(self, job: dict) -> dict:
         return {"app": "ddp", "ddp/job-id": job["id"], "ddp/user-id": str(job.get("user_id"))}
 
+    def _user_pvc(self, job: dict) -> str:
+        return f"ddp-user-{job.get('user_id')}"
+
     # ── phase 1: debug environment ──────────────
 
     async def prepare(self, job: dict) -> dict:
-        """Create PVC + debug pod + svc. Returns {'ssh_port': int, 'ssh_password': str}."""
+        """Create user PVC (if new) + debug pod + svc.
+
+        Returns {'ssh_port': int, 'ssh_password': str}.
+        Workspace is one PVC per user, shared and persisted across their jobs.
+        """
         job_id = job["id"]
         name = self._name(job_id)
         password = secrets.token_urlsafe(9)
         labels = self._labels(job)
+        pvc_name = f"ddp-user-{job.get('user_id')}"
 
-        storage_gb = job.get("storage_gb") or 10
-        # local-path PVC binds to the debug pod's node and the gpu job must
-        # follow it — pin to the node with the most free GPU memory
-        node_selector = {_GPU_NODE_LABEL: "true"}
+        # RWO binds to one node forever: existing PVC -> stick to its node;
+        # new PVC -> pick the node with the most free GPU memory.
         try:
-            best = max(gpu.fetch_gpu_status(), key=lambda g: g["mem_total"] - g["mem_used"],
-                       default=None)
-            if best:
-                node_selector = {"kubernetes.io/hostname": best["node"]}
-        except Exception:
-            pass
-        pvc = client.V1PersistentVolumeClaim(
-            metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE, labels=labels),
-            spec=client.V1PersistentVolumeClaimSpec(
-                access_modes=["ReadWriteOnce"],
-                resources=client.V1VolumeResourceRequirements(
-                    requests={"storage": f"{storage_gb}Gi"})))
+            pvc_obj = await asyncio.to_thread(
+                self.core.read_namespaced_persistent_volume_claim, pvc_name, NAMESPACE)
+            node = (pvc_obj.metadata.annotations or {}).get("volume.kubernetes.io/selected-node")
+            node_selector = ({"kubernetes.io/hostname": node} if node
+                             else {_GPU_NODE_LABEL: "true"})
+        except ApiException as e:
+            if e.status != 404:
+                raise
+            node_selector = {_GPU_NODE_LABEL: "true"}
+            try:
+                best = max(gpu.fetch_gpu_status(), key=lambda g: g["mem_total"] - g["mem_used"],
+                           default=None)
+                if best:
+                    node_selector = {"kubernetes.io/hostname": best["node"]}
+            except Exception:
+                pass
+            pvc = client.V1PersistentVolumeClaim(
+                metadata=client.V1ObjectMeta(name=pvc_name, namespace=NAMESPACE,
+                                             labels={"app": "ddp", "ddp/user-id": str(job.get("user_id"))}),
+                spec=client.V1PersistentVolumeClaimSpec(
+                    access_modes=["ReadWriteOnce"],
+                    resources=client.V1VolumeResourceRequirements(
+                        requests={"storage": f"{job.get('storage_gb') or 10}Gi"})))
+            await asyncio.to_thread(
+                self.core.create_namespaced_persistent_volume_claim, NAMESPACE, pvc)
         pod = client.V1Pod(
             metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE, labels=labels),
             spec=client.V1PodSpec(
@@ -91,7 +110,7 @@ class K8sExecutor:
                     volume_mounts=[client.V1VolumeMount(name="workspace", mount_path="/workspace")])],
                 volumes=[client.V1Volume(
                     name="workspace",
-                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(name))]))
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(pvc_name))]))
         svc = client.V1Service(
             metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE, labels=labels),
             spec=client.V1ServiceSpec(
@@ -99,15 +118,44 @@ class K8sExecutor:
                 selector={"ddp/job-id": job_id},
                 ports=[client.V1ServicePort(port=22, target_port=22)]))
 
-        await asyncio.to_thread(self.core.create_namespaced_persistent_volume_claim, NAMESPACE, pvc)
-        try:
-            await asyncio.to_thread(self.core.create_namespaced_pod, NAMESPACE, pod)
-            svc_obj = await asyncio.to_thread(self.core.create_namespaced_service, NAMESPACE, svc)
-        except Exception:
-            await self._ignore_notfound(
-                self.core.delete_namespaced_persistent_volume_claim, name, NAMESPACE)
-            raise
+        await asyncio.to_thread(self.core.create_namespaced_pod, NAMESPACE, pod)
+        svc_obj = await asyncio.to_thread(self.core.create_namespaced_service, NAMESPACE, svc)
         return {"ssh_port": svc_obj.spec.ports[0].node_port, "ssh_password": password}
+
+    async def wait_ready(self, job_id: str):
+        """Flip initializing -> pending once the debug pod accepts ssh."""
+        name = self._name(job_id)
+        for _ in range(120):  # ~10min (image pull on first use)
+            job = db.get_job(job_id)
+            if not job or job["status"] != "initializing":
+                return
+            try:
+                pod = await asyncio.to_thread(self.core.read_namespaced_pod, name, NAMESPACE)
+                phase = pod.status.phase
+                if phase == "Running" and pod.status.pod_ip:
+                    try:
+                        _, w = await asyncio.wait_for(
+                            asyncio.open_connection(pod.status.pod_ip, 22), timeout=3)
+                        w.close()
+                        await w.wait_closed()
+                        db.update_job(job_id, status="pending")
+                        db.log_event("DEBUG", "system", f"Debug pod ready: {job_id}")
+                        return
+                    except (OSError, asyncio.TimeoutError):
+                        pass
+                elif phase in ("Failed", "Succeeded"):
+                    db.update_job(job_id, status="failed",
+                                  finished_at=datetime.now(timezone.utc).isoformat(),
+                                  error="debug pod exited before becoming ready")
+                    return
+            except ApiException as e:
+                if e.status == 404:
+                    return
+                raise
+            await asyncio.sleep(5)
+        db.update_job(job_id, status="failed",
+                      finished_at=datetime.now(timezone.utc).isoformat(),
+                      error="debug pod did not become ready in time")
 
     # ── phase 2: scheduled gpu run ──────────────
 
@@ -137,7 +185,8 @@ class K8sExecutor:
             containers=[container],
             volumes=[client.V1Volume(
                 name="workspace",
-                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(name))])
+                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                    self._user_pvc(job)))])
         return client.V1Job(
             metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE, labels=self._labels(job)),
             spec=client.V1JobSpec(
@@ -224,11 +273,17 @@ class K8sExecutor:
         await self._ignore_notfound(self.core.delete_namespaced_service, name, NAMESPACE)
 
     async def cleanup(self, job_id: str):
-        """Remove all remaining resources (record deletion)."""
-        name = self._name(job_id)
+        """Remove all remaining resources (record deletion).
+
+        The user PVC survives — workspaces persist across jobs by design.
+        """
         await self.teardown_debug(job_id)
+
+    async def delete_user_workspace(self, user_id: int):
+        """Drop a user's workspace PVC (account deletion)."""
         await self._ignore_notfound(
-            self.core.delete_namespaced_persistent_volume_claim, name, NAMESPACE)
+            self.core.delete_namespaced_persistent_volume_claim,
+            f"ddp-user-{user_id}", NAMESPACE)
 
     # ── internals ───────────────────────────────
 
@@ -255,11 +310,15 @@ class K8sExecutor:
 
     async def _collect_outputs(self, job_id: str):
         """Run a short collector job that mounts the workspace and uploads output/."""
+        job_row = db.get_job(job_id) or {}
+        pvc_name = self._user_pvc(job_row)
         name = f"{self._name(job_id)}-collect"
         container = client.V1Container(
             name="collect",
             image=RUNNER_IMAGE,
-            env=[client.V1EnvVar("JOB_ID", job_id), *_S3_ENV],
+            env=[client.V1EnvVar("JOB_ID", job_id),
+                 client.V1EnvVar("OUTPUT_PATH", job_row.get("output_path") or "output"),
+                 *_S3_ENV],
             volume_mounts=[client.V1VolumeMount(name="workspace", mount_path="/workspace")])
         job = client.V1Job(
             metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE,
@@ -276,7 +335,7 @@ class K8sExecutor:
                         volumes=[client.V1Volume(
                             name="workspace",
                             persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                                self._name(job_id)))]))))
+                                pvc_name))]))))
         try:
             await asyncio.to_thread(self.batch.create_namespaced_job, NAMESPACE, job)
             for _ in range(120):  # ponytail: 10min cap matches activeDeadlineSeconds

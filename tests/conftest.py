@@ -1,8 +1,11 @@
 import io
+import os
 import socket
 import zipfile
 
 import pytest
+
+os.environ.setdefault("DDP_EXECUTOR", "mock")
 
 from app import db
 

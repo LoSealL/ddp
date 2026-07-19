@@ -245,13 +245,22 @@ class TestMonitoring:
 
 
 class TestTimeWindowEnforcement:
-    def test_job_outside_window_gets_queued(self, admin_client):
+    def test_job_outside_window_gets_queued(self, admin_client, normal_client):
         admin_client.put("/api/admin/params", json={
             "time_window_start": "09:00", "time_window_end": "17:00", "time_window_repeat": "daily"
         })
-        resp = admin_client.post("/api/jobs", data={"name": "night job", "image": "ddp-cuda-ssh:latest", "scheduled_at": "2099-01-01T22:00"})
+        resp = normal_client.post("/api/jobs", data={"name": "night job", "image": "ddp-cuda-ssh:latest", "scheduled_at": "2099-01-01T22:00"})
         assert resp.status_code == 200
         assert resp.json()["queued"] is True
+
+    def test_admin_bypasses_window(self, admin_client, normal_client):
+        admin_client.put("/api/admin/params", json={
+            "time_window_start": "09:00", "time_window_end": "17:00", "time_window_repeat": "daily"
+        })
+        r_admin = admin_client.post("/api/jobs", data={"name": "a", "image": "ddp-cuda-ssh:latest", "scheduled_at": "2099-01-01T22:00"})
+        assert r_admin.json()["queued"] is False
+        r_user = normal_client.post("/api/jobs", data={"name": "b", "image": "ddp-cuda-ssh:latest", "scheduled_at": "2099-01-01T22:00"})
+        assert r_user.json()["queued"] is True
 
     def test_job_inside_window_normal(self, admin_client):
         admin_client.put("/api/admin/params", json={

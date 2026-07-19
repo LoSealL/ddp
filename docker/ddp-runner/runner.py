@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 
 import boto3
@@ -26,13 +27,23 @@ def main():
     prefix = f"jobs/{JOB_ID}/output"
     count = 0
 
-    if os.path.isdir("output"):
-        for root, _, files in os.walk("output"):
+    out_cfg = os.environ.get("OUTPUT_PATH", "output")
+    out_dir = out_cfg if os.path.isabs(out_cfg) else os.path.join(WORK, out_cfg)
+    out_dir = os.path.normpath(out_dir)
+    if not out_dir.startswith(WORK + os.sep):
+        print(f"[ddp] FATAL: OUTPUT_PATH escapes workspace: {out_cfg}", flush=True)
+        return 1
+
+    if os.path.isdir(out_dir):
+        for root, _, files in os.walk(out_dir):
             for f in files:
                 full = os.path.join(root, f)
-                rel = os.path.relpath(full, "output")
+                rel = os.path.relpath(full, out_dir)
                 upload(full, f"{prefix}/{rel}")
                 count += 1
+        # workspace is shared across the user's jobs: harvest, don't copy,
+        # so the next job's outputs stay its own
+        shutil.rmtree(out_dir)
 
     if os.path.exists("manifest.json"):
         try:
