@@ -316,46 +316,8 @@ async def update_pending_job(job_id: str, user: dict = Depends(auth.get_current_
         raise HTTPException(404)
     if job["status"] != "pending":
         raise HTTPException(409, "Only pending jobs can be edited")
-
-    updates = {}
-    if name is not None and name.strip():
-        updates["name"] = name.strip()
-    if entry_command is not None and entry_command.strip():
-        updates["entry_command"] = entry_command.strip()
-    if timeout_minutes is not None:
-        if not 1 <= timeout_minutes <= 1440:
-            raise HTTPException(400, "timeout_minutes must be 1-1440")
-        updates["timeout_minutes"] = timeout_minutes
-    if gpus is not None:
-        if gpus < 0:
-            raise HTTPException(400, "gpus must be >= 0")
-        full_user = db.get_user_by_id(user["id"]) or {}
-        quota = full_user.get("gpu_quota_override")
-        if quota is None:
-            quota = db.get_param("gpu_default_quota") or 0
-        if gpus > quota:
-            raise HTTPException(403, f"GPU quota exceeded: requested {gpus}, allowed {quota}")
-        updates["gpus"] = gpus
-        updates["gpu_mem_mb"] = gpu_mem_mb if gpus else None
-    elif gpu_mem_mb is not None and job.get("gpus"):
-        updates["gpu_mem_mb"] = gpu_mem_mb
-    if scheduled_at is not None:
-        local_dt = datetime.fromisoformat(scheduled_at)
-        if not user.get("is_admin"):
-            local_dt = timecheck.check_scheduled_time(local_dt)
-        dt_utc = local_dt.astimezone(timezone.utc)
-        updates["scheduled_at"] = dt_utc.isoformat()
-        scheduler.add_job(
-            executor.execute, DateTrigger(run_date=dt_utc),
-            args=[job_id], id=job_id, replace_existing=True,
-        )
-    if output_path is not None:
-        updates["output_path"] = _validate_output_path(output_path)
-    if not updates:
-        raise HTTPException(400, "Nothing to update")
-    db.update_job(job_id, **updates)
-    db.log_event("INFO", "job", f"Job edited: {job_id} {sorted(updates)}", user_id=user["id"])
-    return db.get_job(job_id)
+    return _apply_job_edits(job, user, name, entry_command, scheduled_at,
+                            timeout_minutes, gpus, gpu_mem_mb, output_path)
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -386,6 +348,124 @@ async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
             await executor.cleanup(job_id)
         db.delete_job(job_id)
         db.log_event("INFO", "job", f"Job deleted: {job_id}", user_id=user["id"])
+    return {"ok": True}
+
+
+# ── Admin: job management (all users) ────────────────
+
+def _with_usernames(jobs):
+    names = {u["id"]: u["username"] for u in db.list_users()}
+    for j in jobs:
+        j["username"] = names.get(j.get("user_id"), "?")
+    return jobs
+
+
+@app.get("/api/admin/jobs")
+async def admin_list_jobs(user: dict = Depends(auth.require_admin)):
+    return _with_usernames(db.list_jobs())
+
+
+def _apply_job_edits(job, user, name, entry_command, scheduled_at,
+                     timeout_minutes, gpus, gpu_mem_mb, output_path):
+    updates = {}
+    if name is not None and name.strip():
+        updates["name"] = name.strip()
+    if entry_command is not None and entry_command.strip():
+        updates["entry_command"] = entry_command.strip()
+    if timeout_minutes is not None:
+        if not 1 <= timeout_minutes <= 1440:
+            raise HTTPException(400, "timeout_minutes must be 1-1440")
+        updates["timeout_minutes"] = timeout_minutes
+    if gpus is not None:
+        if gpus < 0:
+            raise HTTPException(400, "gpus must be >= 0")
+        owner = db.get_user_by_id(job["user_id"]) or {}
+        quota = owner.get("gpu_quota_override")
+        if quota is None:
+            quota = db.get_param("gpu_default_quota") or 0
+        if gpus > quota:
+            raise HTTPException(403, f"GPU quota exceeded: requested {gpus}, allowed {quota}")
+        updates["gpus"] = gpus
+        updates["gpu_mem_mb"] = gpu_mem_mb if gpus else None
+    elif gpu_mem_mb is not None and job.get("gpus"):
+        updates["gpu_mem_mb"] = gpu_mem_mb
+    if scheduled_at is not None:
+        local_dt = datetime.fromisoformat(scheduled_at)
+        if not user.get("is_admin"):
+            local_dt = timecheck.check_scheduled_time(local_dt)
+        dt_utc = local_dt.astimezone(timezone.utc)
+        updates["scheduled_at"] = dt_utc.isoformat()
+        scheduler.add_job(
+            executor.execute, DateTrigger(run_date=dt_utc),
+            args=[job["id"]], id=job["id"], replace_existing=True,
+        )
+    if output_path is not None:
+        updates["output_path"] = _validate_output_path(output_path)
+    if not updates:
+        raise HTTPException(400, "Nothing to update")
+    db.update_job(job["id"], **updates)
+    db.log_event("INFO", "job", f"Job edited: {job['id']} {sorted(updates)}", user_id=user["id"])
+    return db.get_job(job["id"])
+
+
+@app.patch("/api/admin/jobs/{job_id}")
+async def admin_update_job(job_id: str, user: dict = Depends(auth.require_admin),
+                           name: str = Form(None), entry_command: str = Form(None),
+                           scheduled_at: str = Form(None), timeout_minutes: int = Form(None),
+                           gpus: int = Form(None), gpu_mem_mb: int | None = Form(None),
+                           output_path: str = Form(None)):
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404)
+    if job["status"] != "pending":
+        raise HTTPException(409, "Only pending jobs can be edited")
+    return _apply_job_edits(job, user, name, entry_command, scheduled_at,
+                            timeout_minutes, gpus, gpu_mem_mb, output_path)
+
+
+@app.delete("/api/admin/jobs/{job_id}")
+async def admin_delete_job(job_id: str, user: dict = Depends(auth.require_admin)):
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404)
+    if job["status"] != "pending":
+        raise HTTPException(409, "Only pending jobs can be deleted by admin")
+    try:
+        scheduler.remove_job(job_id)
+    except Exception:
+        pass
+    if hasattr(executor, "cleanup"):
+        await executor.cleanup(job_id)
+    db.update_job(job_id, status="cancelled")
+    db.log_event("INFO", "admin", f"Job cancelled by admin: {job_id}", user_id=user["id"])
+    return {"ok": True}
+
+
+@app.post("/api/admin/jobs/reorder")
+async def admin_reorder_jobs(body: dict, user: dict = Depends(auth.require_admin)):
+    """Rewrite scheduled_at of pending jobs so they fire in the given order,
+    one minute apart starting from the earliest current schedule."""
+    ids = body.get("ids")
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(400, "ids must be a non-empty list")
+    jobs = []
+    for jid in ids:
+        job = db.get_job(jid)
+        if not job:
+            raise HTTPException(404, f"Unknown job: {jid}")
+        if job["status"] != "pending":
+            raise HTTPException(409, f"Job {jid} is not pending")
+        jobs.append(job)
+    base = min(datetime.fromisoformat(j["scheduled_at"]) for j in jobs)
+    from datetime import timedelta
+    for i, job in enumerate(jobs):
+        dt = base + timedelta(minutes=i)
+        db.update_job(job["id"], scheduled_at=dt.isoformat())
+        scheduler.add_job(
+            executor.execute, DateTrigger(run_date=dt),
+            args=[job["id"]], id=job["id"], replace_existing=True,
+        )
+    db.log_event("INFO", "admin", f"Pending jobs reordered ({len(jobs)})", user_id=user["id"])
     return {"ok": True}
 
 

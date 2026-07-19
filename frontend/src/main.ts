@@ -8,6 +8,7 @@ interface Job {
   id: string;
   user_id: number;
   name: string;
+  username?: string;
   image: string;
   entry_command: string;
   scheduled_at: string;
@@ -89,7 +90,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     logs: "Logs", noLogs: "No logs yet.", outputArtifacts: "Output Artifacts",
     downloadLogs: "Download Logs", downloadCode: "Download Code",
     failed: "Failed", files: "file(s)", min: "min",
-    st_initializing: "initializing",
+    st_initializing: "initializing", dragToOrder: "Drag to reorder queue",
     st_pending: "pending", st_running: "running", st_done: "done",
     st_failed: "failed", st_timeout: "timeout", st_cancelled: "cancelled",
     langLabel: "中文",
@@ -153,7 +154,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     logs: "日志", noLogs: "暂无日志。", outputArtifacts: "产物文件",
     downloadLogs: "下载日志", downloadCode: "下载代码",
     failed: "操作失败", files: "个文件", min: "分钟",
-    st_initializing: "初始化中",
+    st_initializing: "初始化中", dragToOrder: "拖拽调整执行顺序",
     st_pending: "等待中", st_running: "运行中", st_done: "已完成",
     st_failed: "失败", st_timeout: "超时", st_cancelled: "已取消",
     langLabel: "EN",
@@ -186,6 +187,20 @@ const I18N: Record<Lang, Record<string, string>> = {
 };
 
 let LANG: Lang = (localStorage.getItem('ddp-lang') as Lang) || (navigator.language.startsWith('zh') ? 'zh' : 'en');
+let THEME = localStorage.getItem('ddp-theme') ||
+  (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+
+function applyTheme(): void {
+  document.documentElement.dataset.theme = THEME;
+  const b = document.getElementById('theme-toggle');
+  if (b) b.textContent = THEME === 'dark' ? '☀️' : '🌙';
+}
+
+function toggleTheme(): void {
+  THEME = THEME === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('ddp-theme', THEME);
+  applyTheme();
+}
 
 function t(key: string): string { return I18N[LANG][key] || key; }
 
@@ -681,7 +696,7 @@ async function refreshGpus(): Promise<void> {
 function statusLabel(s: string): string { return t('st_' + s) || s; }
 
 async function refreshJobs(): Promise<void> {
-  const resp = await fetch(API);
+  const resp = await fetch(isAdmin ? '/api/admin/jobs' : API);
   if (resp.status === 401) { showAuthView(); return; }
   allJobs = await resp.json();
   renderJobs();
@@ -696,8 +711,14 @@ function renderJobs(): void {
   if (statusFilter) jobs = jobs.filter(j => j.status === statusFilter);
   if (q) jobs = jobs.filter(j =>
     (j.name || '').toLowerCase().includes(q) ||
-    (j.image || '').toLowerCase().includes(q)
+    (j.image || '').toLowerCase().includes(q) ||
+    (j.username || '').toLowerCase().includes(q)
   );
+  if (isAdmin) {
+    const pend = jobs.filter(j => j.status === 'pending')
+      .sort((a, b) => (a.scheduled_at || '').localeCompare(b.scheduled_at || ''));
+    jobs = [...pend, ...jobs.filter(j => j.status !== 'pending')];
+  }
 
   const list = $('job-list');
   $('job-count').textContent = String(jobs.length);
@@ -707,13 +728,17 @@ function renderJobs(): void {
     return;
   }
 
+  let pendIdx = 0;
   list.innerHTML = jobs.map(j => {
     const scheduled = j.scheduled_at ? new Date(j.scheduled_at).toLocaleString() : '—';
     const started = j.started_at ? new Date(j.started_at).toLocaleString() : '—';
+    const pend = isAdmin && j.status === 'pending';
+    const order = pend ? ++pendIdx : 0;
     return `
-      <div class="job-card" data-job-id="${j.id}">
+      <div class="job-card" data-job-id="${j.id}" data-pending="${pend ? 1 : 0}" ${pend ? 'draggable="true"' : ''}>
+        ${pend ? `<span class="drag-order" title="${t('dragToOrder')}">⠿ ${order}</span>` : ''}
         <div class="info">
-          <div class="name">${escapeHtml(j.name)}</div>
+          <div class="name">${escapeHtml(j.name)}${isAdmin && j.username ? ` <span class="owner">@${escapeHtml(j.username)}</span>` : ''}</div>
           <div class="meta">
             <span>🖼 ${escapeHtml(j.image || '')}</span>
             <span>⏰ ${scheduled}</span>
@@ -723,7 +748,7 @@ function renderJobs(): void {
           </div>
         </div>
         <span class="status status-${j.status}">${statusLabel(j.status)}</span>
-        ${j.status === 'running' ? '' : `<button class="btn-delete-card" data-delete-id="${j.id}" title="${t('deleteJob')}">✕</button>`}
+        ${j.status === 'running' || (isAdmin && j.status !== 'pending') ? '' : `<button class="btn-delete-card" data-delete-id="${j.id}" title="${t('deleteJob')}">✕</button>`}
       </div>`;
   }).join('');
 }
@@ -827,7 +852,7 @@ async function saveEdit(e: SubmitEvent): Promise<void> {
   const jobId = form.dataset.jobId!;
   const fd = new FormData(form);
   if (!(fd.get('gpu_mem_mb') as string).trim()) fd.delete('gpu_mem_mb');
-  const resp = await fetch(`${API}/${jobId}`, { method: 'PATCH', body: fd });
+  const resp = await fetch(jobUrl(jobId), { method: 'PATCH', body: fd });
   if (resp.ok) {
     await refreshJobs();
     openModal(jobId);
@@ -841,16 +866,20 @@ function closeModal(): void {
   $('modal').classList.remove('open');
 }
 
+function jobUrl(jobId: string): string {
+  return isAdmin ? `/api/admin/jobs/${jobId}` : `${API}/${jobId}`;
+}
+
 async function cancelJob(jobId: string): Promise<void> {
   if (!confirm(t('cancelConfirm'))) return;
-  const resp = await fetch(`${API}/${jobId}`, { method: 'DELETE' });
+  const resp = await fetch(jobUrl(jobId), { method: 'DELETE' });
   if (resp.ok) { closeModal(); await refreshJobs(); }
   else { const err = await resp.json().catch(() => ({} as Record<string, string>)); alert(err.detail || t('failed')); }
 }
 
 async function deleteJob(jobId: string): Promise<void> {
   if (!confirm(t('deleteConfirm'))) return;
-  const resp = await fetch(`${API}/${jobId}`, { method: 'DELETE' });
+  const resp = await fetch(jobUrl(jobId), { method: 'DELETE' });
   if (resp.ok) { closeModal(); await refreshJobs(); }
   else { const err = await resp.json().catch(() => ({} as Record<string, string>)); alert(err.detail || t('failed')); }
 }
@@ -918,7 +947,9 @@ function formatSize(bytes: number): string {
 // ── Init ─────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   applyI18n();
+  applyTheme();
 
+  $('theme-toggle').addEventListener('click', toggleTheme);
   $('tab-login').addEventListener('click', () => switchAuthTab('login'));
   $('tab-register').addEventListener('click', () => switchAuthTab('register'));
   $('login-form').addEventListener('submit', doLogin);
@@ -940,6 +971,43 @@ document.addEventListener('DOMContentLoaded', () => {
     if (delBtn?.dataset.deleteId) { deleteJob(delBtn.dataset.deleteId); return; }
     const card = (e.target as HTMLElement).closest('.job-card') as HTMLElement | null;
     if (card?.dataset.jobId) openModal(card.dataset.jobId);
+  });
+
+  // Admin: drag to reorder pending queue
+  $('job-list').addEventListener('dragstart', e => {
+    const card = (e.target as HTMLElement).closest('.job-card') as HTMLElement | null;
+    if (card?.dataset.jobId && card.dataset.pending === '1') {
+      (e as DragEvent).dataTransfer!.setData('text/plain', card.dataset.jobId);
+      (e as DragEvent).dataTransfer!.effectAllowed = 'move';
+    }
+  });
+  $('job-list').addEventListener('dragover', e => {
+    const card = (e.target as HTMLElement).closest('.job-card') as HTMLElement | null;
+    if (card?.dataset.pending === '1') { e.preventDefault(); card.classList.add('drag-over'); }
+  });
+  $('job-list').addEventListener('dragleave', e => {
+    const card = (e.target as HTMLElement).closest('.job-card') as HTMLElement | null;
+    if (card) card.classList.remove('drag-over');
+  });
+  $('job-list').addEventListener('drop', async e => {
+    e.preventDefault();
+    const target = (e.target as HTMLElement).closest('.job-card') as HTMLElement | null;
+    if (target) target.classList.remove('drag-over');
+    const draggedId = (e as DragEvent).dataTransfer!.getData('text/plain');
+    if (!draggedId) return;
+    const ids = Array.from(document.querySelectorAll('.job-card[data-pending="1"]'))
+      .map(el => (el as HTMLElement).dataset.jobId!)
+      .filter(id => id !== draggedId);
+    const at = target?.dataset.pending === '1' ? ids.indexOf(target.dataset.jobId!) : ids.length;
+    ids.splice(at < 0 ? ids.length : at, 0, draggedId);
+    const resp = await fetch('/api/admin/jobs/reorder', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({} as Record<string, string>));
+      alert(err.detail || t('failed'));
+    }
+    await refreshJobs();
   });
 
   $('modal-body').addEventListener('click', e => {

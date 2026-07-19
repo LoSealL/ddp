@@ -13,6 +13,21 @@
   --blue: #3b82f6;
   --gray: #71717a;
 }
+[data-theme="light"] {
+  --bg: #f4f5f9;
+  --card: #ffffff;
+  --card-hi: #eceef4;
+  --border: #d9dbe4;
+  --text: #20242e;
+  --text-dim: #6b7280;
+  --accent: #6366f1;
+  --accent-hi: #4f46e5;
+  --green: #16a34a;
+  --red: #dc2626;
+  --orange: #d97706;
+  --blue: #2563eb;
+  --gray: #9ca3af;
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
@@ -331,6 +346,10 @@ header .user-area .username strong { color: var(--text); }
   border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 13px;
 }
 .logs-pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.job-card .drag-order { cursor: grab; color: var(--text-dim); font-size: 13px; padding-right: 10px; user-select: none; }
+.job-card.drag-over { border-color: var(--accent); }
+.job-card .owner { color: var(--accent-hi); font-size: 12px; font-weight: 400; }
 
 /* GPU dashboard */
 .gpu-dash-summary { font-size: 13px; color: var(--text-dim); margin-bottom: 8px; }

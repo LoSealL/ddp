@@ -244,6 +244,50 @@ class TestMonitoring:
         assert normal_client.get("/api/admin/monitoring").status_code == 403
 
 
+class TestAdminJobManagement:
+    def _submit(self, client, name):
+        r = client.post("/api/jobs", data={"name": name, "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE})
+        assert r.status_code == 200
+        return r.json()["id"]
+
+    def test_admin_sees_all_jobs(self, admin_client, normal_client):
+        self._submit(admin_client, "admin job")
+        self._submit(normal_client, "user job")
+        jobs = admin_client.get("/api/admin/jobs").json()
+        assert len(jobs) == 2
+        assert {j["username"] for j in jobs} == {"admin", "normie"}
+
+    def test_admin_edit_pending(self, admin_client, normal_client):
+        job_id = self._submit(normal_client, "user job")
+        r = admin_client.patch(f"/api/admin/jobs/{job_id}", data={"name": "renamed", "gpus": "1"})
+        assert r.status_code == 200
+        assert r.json()["name"] == "renamed"
+
+    def test_admin_delete_pending(self, admin_client, normal_client):
+        job_id = self._submit(normal_client, "user job")
+        r = admin_client.delete(f"/api/admin/jobs/{job_id}")
+        assert r.status_code == 200
+        assert admin_client.get(f"/api/admin/jobs").json()[0]["status"] == "cancelled"
+
+    def test_admin_delete_non_pending_rejected(self, admin_client, normal_client):
+        job_id = self._submit(normal_client, "user job")
+        normal_client.delete(f"/api/jobs/{job_id}")  # cancelled
+        assert admin_client.delete(f"/api/admin/jobs/{job_id}").status_code == 409
+
+    def test_reorder(self, admin_client, normal_client):
+        a = self._submit(normal_client, "A")
+        b = self._submit(normal_client, "B")
+        c = self._submit(normal_client, "C")
+        r = admin_client.post("/api/admin/jobs/reorder", json={"ids": [c, a, b]})
+        assert r.status_code == 200
+        times = {j["name"]: j["scheduled_at"] for j in admin_client.get("/api/admin/jobs").json()}
+        assert times["C"] < times["A"] < times["B"]
+
+    def test_non_admin_forbidden(self, normal_client):
+        assert normal_client.get("/api/admin/jobs").status_code == 403
+        assert normal_client.post("/api/admin/jobs/reorder", json={"ids": ["x"]}).status_code == 403
+
+
 class TestTimeWindowEnforcement:
     def test_job_outside_window_gets_queued(self, admin_client, normal_client):
         admin_client.put("/api/admin/params", json={
