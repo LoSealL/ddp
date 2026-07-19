@@ -75,6 +75,19 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN gpus INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN gpu_mem_mb INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    for col, ddl in [("image", "TEXT"), ("ssh_port", "INTEGER"), ("ssh_password", "TEXT")]:
+        try:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
+        except sqlite3.OperationalError:
+            pass
+    try:
         conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
         pass
@@ -93,12 +106,7 @@ def init_db():
         ("time_window_repeat", "daily"),
         ("gpu_default_quota", "1"),
         ("storage_default_quota_gb", "10.0"),
-        ("gpu_devices", json.dumps([
-            {"enabled": True, "name": "GPU-a1b2c3d4-e5f6-7890-abcd-ef1234567890", "memory_total_mb": 16384, "memory_used_mb": 0,
-             "cores_total": 100, "cores_used": 0},
-            {"enabled": True, "name": "GPU-b2c3d4e5-f6a7-8901-bcde-f23456789012", "memory_total_mb": 16384, "memory_used_mb": 0,
-             "cores_total": 100, "cores_used": 0},
-        ])),
+        ("gpu_devices", "[]"),
     ]
     for key, value in default_params:
         conn.execute(
@@ -109,13 +117,16 @@ def init_db():
     conn.close()
 
 
-def create_job(job_id, user_id, name, filename, entry_command, scheduled_at, timeout_minutes):
+def create_job(job_id, user_id, name, image, entry_command, scheduled_at, timeout_minutes,
+               gpus=0, gpu_mem_mb=None, ssh_port=None, ssh_password=None):
     now = datetime.now(timezone.utc).isoformat()
     conn = get_db()
     conn.execute("""
-        INSERT INTO jobs (id, user_id, name, filename, entry_command, scheduled_at, timeout_minutes, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-    """, (job_id, user_id, name, filename, entry_command, scheduled_at, timeout_minutes, now))
+        INSERT INTO jobs (id, user_id, name, filename, image, entry_command, scheduled_at, timeout_minutes,
+                          gpus, gpu_mem_mb, ssh_port, ssh_password, status, created_at)
+        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    """, (job_id, user_id, name, image, entry_command, scheduled_at, timeout_minutes,
+          gpus, gpu_mem_mb, ssh_port, ssh_password, now))
     conn.commit()
     conn.close()
 

@@ -6,9 +6,12 @@ import pytest
 FUTURE = "2099-01-01T00:00"
 
 
-def _s3_reachable(host="127.0.0.1", port=9000, timeout=3):
+def _s3_reachable(timeout=3):
+    from urllib.parse import urlparse
+    import os
+    u = urlparse(os.environ.get("DDP_S3_ENDPOINT", "http://172.16.50.100:9000"))
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        with socket.create_connection((u.hostname, u.port or 80), timeout=timeout):
             return True
     except OSError:
         return False
@@ -31,12 +34,10 @@ def authed_client(client):
     return client
 
 
-def _submit_job(client, make_zip, name="test job"):
-    zip_bytes = make_zip({"main.py": "print('hello')"})
+def _submit_job(client, make_zip=None, name="test job"):
     resp = client.post(
         "/api/jobs",
-        data={"name": name, "scheduled_at": FUTURE, "timeout_minutes": "5"},
-        files={"file": ("project.zip", io.BytesIO(zip_bytes), "application/zip")},
+        data={"name": name, "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE, "timeout_minutes": "5"},
     )
     assert resp.status_code == 200
     return resp.json()["id"]
@@ -122,20 +123,17 @@ class TestJobs:
         job = authed_client.get(f"/api/jobs/{job_id}").json()
         assert job["status"] == "cancelled"
 
-    def test_reject_non_zip(self, authed_client):
+    def test_reject_unknown_image(self, authed_client):
         resp = authed_client.post(
             "/api/jobs",
-            data={"name": "bad", "scheduled_at": FUTURE},
-            files={"file": ("notzip.txt", io.BytesIO(b"nope"), "text/plain")},
+            data={"name": "bad", "image": "windowsxp", "scheduled_at": FUTURE},
         )
         assert resp.status_code == 400
 
-    def test_submit_requires_auth(self, client, make_zip):
-        zip_bytes = make_zip({"main.py": "print(1)"})
+    def test_submit_requires_auth(self, client):
         resp = client.post(
             "/api/jobs",
-            data={"name": "x", "scheduled_at": FUTURE},
-            files={"file": ("p.zip", io.BytesIO(zip_bytes), "application/zip")},
+            data={"name": "x", "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE},
         )
         assert resp.status_code == 401
 

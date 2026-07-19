@@ -24,9 +24,9 @@ class Storage:
         secret_key: str | None = None,
         bucket: str | None = None,
     ):
-        endpoint_url = endpoint_url or os.environ.get("DDP_S3_ENDPOINT", "http://127.0.0.1:9000")
+        endpoint_url = endpoint_url or os.environ.get("DDP_S3_ENDPOINT", "http://172.16.50.100:9000")
         access_key = access_key or os.environ.get("DDP_S3_ACCESS_KEY", "admin")
-        secret_key = secret_key or os.environ.get("DDP_S3_SECRET_KEY", "Minio@2026")
+        secret_key = secret_key or os.environ.get("DDP_S3_SECRET_KEY", "yuanqi,123")
         self.bucket = bucket or os.environ.get("DDP_S3_BUCKET", "ddp")
 
         self.s3 = boto3.client(

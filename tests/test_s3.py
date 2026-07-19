@@ -1,19 +1,22 @@
+import os
 import socket
 import uuid
+from urllib.parse import urlparse
 
 import pytest
 from botocore.exceptions import ClientError, ConnectionError as BotoConnectionError
 
 from app.storage import Storage
 
-ENDPOINT = "http://127.0.0.1:9000"
-ACCESS_KEY = "admin"
-SECRET_KEY = "Minio@2026"
+ENDPOINT = os.environ.get("DDP_S3_ENDPOINT", "http://172.16.50.100:9000")
+ACCESS_KEY = os.environ.get("DDP_S3_ACCESS_KEY", "admin")
+SECRET_KEY = os.environ.get("DDP_S3_SECRET_KEY", "yuanqi,123")
 
 
-def _s3_reachable(host: str, port: int, timeout: float = 3) -> bool:
+def _s3_reachable(timeout: float = 3) -> bool:
+    u = urlparse(ENDPOINT)
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        with socket.create_connection((u.hostname, u.port or 80), timeout=timeout):
             return True
     except OSError:
         return False
@@ -21,7 +24,7 @@ def _s3_reachable(host: str, port: int, timeout: float = 3) -> bool:
 
 @pytest.fixture(scope="module")
 def storage():
-    if not _s3_reachable("127.0.0.1", 9000):
+    if not _s3_reachable():
         pytest.skip("S3 server unreachable")
     return Storage(
         endpoint_url=ENDPOINT,

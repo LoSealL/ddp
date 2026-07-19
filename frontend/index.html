@@ -48,7 +48,7 @@
   <header>
     <h1>DDP</h1>
     <span style="color: var(--text-dim); font-size: 13px;" data-i18n="tagline">Delayed Dispatch Platform</span>
-    <span class="badge-mock">MOCK MODE</span>
+    <span class="badge-mock" id="mode-badge">MOCK MODE</span>
     <div class="spacer"></div>
     <button class="btn-admin" id="btn-admin" style="display:none" data-i18n="admin">Admin</button>
     <div class="user-area">
@@ -66,13 +66,9 @@
           <input type="text" name="name" required placeholder="e.g. nightly ETL" />
         </div>
         <div class="field">
-          <label data-i18n="projectZip">Project (zip)</label>
-          <div class="upload-zone" id="dropzone">
-            <div class="icon">📦</div>
-            <div class="label" data-i18n="dropzoneHint">Click or drag a .zip here</div>
-            <div class="filename" id="file-display"></div>
-            <input type="file" id="file-input" name="file" accept=".zip" required />
-          </div>
+          <label data-i18n="image">Image</label>
+          <select name="image" id="image-select"></select>
+          <div class="hint" data-i18n="imageHint">Base environment of the debug pod and the GPU run.</div>
         </div>
         <div class="field">
           <label data-i18n="entryCommand">Entry Command</label>
@@ -88,6 +84,16 @@
           <label data-i18n="maxRuntime">Max Runtime (minutes)</label>
           <input type="number" name="timeout_minutes" value="60" min="1" max="1440" />
           <div class="hint" data-i18n="maxRuntimeHint">Hard kill at this point. Outputs collected up to then.</div>
+        </div>
+        <div class="field">
+          <label data-i18n="gpus">GPUs</label>
+          <input type="number" name="gpus" id="gpus" value="0" min="0" />
+          <div class="hint" data-i18n="gpusHint">vGPU slices via HAMi. 0 = CPU only.</div>
+        </div>
+        <div class="field" id="gpu-mem-field" style="display:none">
+          <label data-i18n="gpuMem">GPU Memory (MB, optional)</label>
+          <input type="number" name="gpu_mem_mb" id="gpu_mem_mb" min="0" step="1024" placeholder="full share" />
+          <div class="hint" data-i18n="gpuMemHint">Leave empty for a full-memory vGPU slice.</div>
         </div>
         <button type="submit" class="btn-submit" id="submit-btn" data-i18n="scheduleJob">Schedule Job</button>
       </form>
@@ -106,6 +112,7 @@
           <option value="cancelled" data-i18n="st_cancelled">Cancelled</option>
         </select>
       </div>
+      <div id="gpu-dashboard"></div>
       <div id="job-list"></div>
     </section>
   </div>

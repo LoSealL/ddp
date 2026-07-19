@@ -161,11 +161,15 @@ class TestSystemParams:
         assert params["time_window_repeat"] == "weekdays"
 
     def test_update_gpu_devices(self, admin_client):
-        devices = [{"id": 0, "name": "A100", "memory_total_mb": 40960, "memory_used_mb": 0,
-                     "cores_total": 100, "cores_used": 0}]
+        devices = [{"uuid": "GPU-aaaa-bbbb", "enabled": False}]
         admin_client.put("/api/admin/params", json={"gpu_devices": devices})
         params = admin_client.get("/api/admin/params").json()
-        assert params["gpu_devices"][0]["name"] == "A100"
+        assert params["gpu_devices"][0]["uuid"] == "GPU-aaaa-bbbb"
+        assert params["gpu_devices"][0]["enabled"] is False
+
+    def test_reject_invalid_gpu_devices(self, admin_client):
+        resp = admin_client.put("/api/admin/params", json={"gpu_devices": [{"name": "A100"}]})
+        assert resp.status_code == 400
 
     def test_reject_unknown_param(self, admin_client):
         resp = admin_client.put("/api/admin/params", json={"nonexistent_key": "value"})
@@ -231,10 +235,8 @@ class TestMonitoring:
         assert "object_count" in data["s3"]
         assert "total_size_bytes" in data["s3"]
 
-    def test_monitoring_job_counts(self, admin_client, make_zip):
-        zip_bytes = make_zip({"main.py": "print('hello')"})
-        admin_client.post("/api/jobs", data={"name": "job1", "scheduled_at": FUTURE},
-                          files={"file": ("p.zip", io.BytesIO(zip_bytes), "application/zip")})
+    def test_monitoring_job_counts(self, admin_client):
+        admin_client.post("/api/jobs", data={"name": "job1", "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE})
         resp = admin_client.get("/api/admin/monitoring")
         assert resp.json()["jobs"]["pending"] >= 1
 
@@ -243,22 +245,18 @@ class TestMonitoring:
 
 
 class TestTimeWindowEnforcement:
-    def test_job_outside_window_gets_queued(self, admin_client, make_zip):
+    def test_job_outside_window_gets_queued(self, admin_client):
         admin_client.put("/api/admin/params", json={
             "time_window_start": "09:00", "time_window_end": "17:00", "time_window_repeat": "daily"
         })
-        zip_bytes = make_zip({"main.py": "print(1)"})
-        resp = admin_client.post("/api/jobs", data={"name": "night job", "scheduled_at": "2099-01-01T22:00"},
-                                 files={"file": ("p.zip", io.BytesIO(zip_bytes), "application/zip")})
+        resp = admin_client.post("/api/jobs", data={"name": "night job", "image": "ddp-cuda-ssh:latest", "scheduled_at": "2099-01-01T22:00"})
         assert resp.status_code == 200
         assert resp.json()["queued"] is True
 
-    def test_job_inside_window_normal(self, admin_client, make_zip):
+    def test_job_inside_window_normal(self, admin_client):
         admin_client.put("/api/admin/params", json={
             "time_window_start": "00:00", "time_window_end": "23:59", "time_window_repeat": "daily"
         })
-        zip_bytes = make_zip({"main.py": "print(1)"})
-        resp = admin_client.post("/api/jobs", data={"name": "anytime", "scheduled_at": "2099-06-15T12:00"},
-                                 files={"file": ("p.zip", io.BytesIO(zip_bytes), "application/zip")})
+        resp = admin_client.post("/api/jobs", data={"name": "anytime", "image": "ddp-cuda-ssh:latest", "scheduled_at": "2099-06-15T12:00"})
         assert resp.status_code == 200
         assert resp.json()["queued"] is False

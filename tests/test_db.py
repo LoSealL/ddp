@@ -34,7 +34,7 @@ class TestJobs:
         return db.create_user("tester", "h", "s")
 
     def _create_job(self, user_id, name="test job"):
-        db.create_job("job-1", user_id, name, "proj.zip", "python main.py", "2026-01-01T00:00:00+00:00", 60)
+        db.create_job("job-1", user_id, name, "ddp-cuda-ssh:latest", "python main.py", "2026-01-01T00:00:00+00:00", 60)
         return "job-1"
 
     def test_create_and_get(self):
@@ -49,8 +49,8 @@ class TestJobs:
     def test_list_scoped_by_user(self):
         uid_a = db.create_user("userA", "h", "s")
         uid_b = db.create_user("userB", "h", "s")
-        db.create_job("job-a", uid_a, "A's job", "a.zip", "python a.py", "2026-01-01T00:00:00+00:00", 30)
-        db.create_job("job-b", uid_b, "B's job", "b.zip", "python b.py", "2026-01-01T00:00:00+00:00", 30)
+        db.create_job("job-a", uid_a, "A's job", "ddp-cuda-ssh:latest", "python a.py", "2026-01-01T00:00:00+00:00", 30)
+        db.create_job("job-b", uid_b, "B's job", "ddp-cuda-ssh:latest", "python b.py", "2026-01-01T00:00:00+00:00", 30)
 
         jobs_a = db.list_jobs(uid_a)
         assert len(jobs_a) == 1
@@ -62,8 +62,8 @@ class TestJobs:
 
     def test_list_all(self):
         uid = self._setup_user()
-        db.create_job("j1", uid, "first", "a.zip", "python a.py", "2026-01-01T00:00:00+00:00", 30)
-        db.create_job("j2", uid, "second", "b.zip", "python b.py", "2026-01-01T00:00:00+00:00", 30)
+        db.create_job("j1", uid, "first", "ddp-cuda-ssh:latest", "python a.py", "2026-01-01T00:00:00+00:00", 30)
+        db.create_job("j2", uid, "second", "ddp-cuda-ssh:latest", "python b.py", "2026-01-01T00:00:00+00:00", 30)
         all_jobs = db.list_jobs()
         assert len(all_jobs) == 2
 

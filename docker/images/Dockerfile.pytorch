@@ -1,0 +1,9 @@
+FROM 172.16.50.3:5000/neospark/pytorch-26.06:latest
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+COPY entry.sh /opt/ddp/entry.sh
+COPY nvidia-smi /usr/local/bin/nvidia-smi
+RUN chmod +x /opt/ddp/entry.sh /usr/local/bin/nvidia-smi
+ENTRYPOINT ["/opt/ddp/entry.sh"]

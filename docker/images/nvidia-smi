@@ -1,0 +1,12 @@
+#!/bin/dash
+# DDP shim: cpu-only debug pods get NVIDIA_VISIBLE_DEVICES=void (toolkit injects
+# no GPU devices). Print a clean empty result instead of "command not found".
+# GPU pods pass through to the real toolkit-injected binary.
+# Detection is by device presence: ssh sessions don't inherit container env.
+# NOTE: must be a real dash — /bin/sh is sh-wrap->bash in NGC images, and bash
+# re-sources BASH_ENV (/etc/bash.bashrc -> shinit_v2 -> nvidia-smi) = fork bomb.
+if ls /dev/nvidia[0-9]* >/dev/null 2>&1 && [ -x /usr/bin/nvidia-smi ]; then
+  exec /usr/bin/nvidia-smi "$@"
+fi
+echo "No devices were found"
+exit 0

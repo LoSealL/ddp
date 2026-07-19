@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 
@@ -5,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, field_validator
 from typing import Optional
 
-from . import db, auth
+from . import db, auth, gpu
 from .storage import Storage
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -97,8 +98,10 @@ async def update_params(body: dict, user: dict = Depends(auth.require_admin)):
         if body["time_window_repeat"] not in ("daily", "weekly", "weekdays"):
             raise HTTPException(400, "time_window_repeat must be daily, weekly, or weekdays")
 
-    if "gpu_devices" in body and not isinstance(body["gpu_devices"], list):
-        raise HTTPException(400, "gpu_devices must be a list")
+    if "gpu_devices" in body:
+        if not isinstance(body["gpu_devices"], list) or \
+                not all(isinstance(d, dict) and "uuid" in d for d in body["gpu_devices"]):
+            raise HTTPException(400, "gpu_devices must be a list of {uuid, enabled}")
 
     for key, value in body.items():
         if key == "gpu_devices":
@@ -135,14 +138,17 @@ async def get_monitoring(user: dict = Depends(auth.require_admin)):
         if job["status"] in job_counts:
             job_counts[job["status"]] += 1
 
-    gpu_devices = db.get_all_params().get("gpu_devices", [])
+    try:
+        gpu_devices = await asyncio.to_thread(gpu.fetch_gpu_status)
+    except Exception:
+        gpu_devices = []
 
     # ponytail: list_objects_v2 caps at 1000 keys; use paginator if bucket grows large
     objects = storage.list_objects(storage.bucket)
     total_size = sum(o["size"] for o in objects)
     s3_info = {
         "bucket": storage.bucket,
-        "endpoint": os.environ.get("DDP_S3_ENDPOINT", "http://127.0.0.1:9000"),
+        "endpoint": os.environ.get("DDP_S3_ENDPOINT", "http://172.16.50.100:9000"),
         "object_count": len(objects),
         "total_size_bytes": total_size,
     }

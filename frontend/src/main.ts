@@ -8,7 +8,7 @@ interface Job {
   id: string;
   user_id: number;
   name: string;
-  filename: string;
+  image: string;
   entry_command: string;
   scheduled_at: string;
   timeout_minutes: number;
@@ -19,6 +19,10 @@ interface Job {
   s3_prefix: string | null;
   output_count: number;
   error: string | null;
+  gpus: number;
+  gpu_mem_mb: number | null;
+  ssh_port: number | null;
+  ssh_password: string | null;
 }
 
 interface Output {
@@ -26,6 +30,19 @@ interface Output {
   size: number;
   s3_uri: string;
   download_url: string;
+}
+
+interface GpuStatus {
+  uuid: string;
+  node: string;
+  index: number;
+  type: string;
+  mem_total: number;
+  mem_used: number;
+  cores_total: number;
+  cores_used: number;
+  shared: number;
+  enabled?: boolean;
 }
 
 // ── Element helper ───────────────────────────
@@ -47,9 +64,13 @@ const I18N: Record<Lang, Record<string, string>> = {
     submitJob: "Submit Job", jobs: "Jobs",
     jobName: "Job Name", projectZip: "Project (zip)",
     dropzoneHint: "Click or drag a .zip here",
-    entryCommand: "Entry Command", entryCommandHint: "Shell command to run inside the project root.",
+    entryCommand: "Entry Command", entryCommandHint: "Runs in /workspace of the GPU pod at the scheduled time.",
+    image: "Image", imageHint: "Base environment shared by the debug pod and the GPU run.",
+    sshAccess: "SSH Access (debug pod)", sshCmd: "Command", sshPassword: "Password", sshHint: "Everything you install/change in /workspace carries over to the GPU run.",
     scheduledStart: "Scheduled Start (local time)", scheduledStartHint: "Platform fires within ~30s of this time.",
     maxRuntime: "Max Runtime (minutes)", maxRuntimeHint: "Hard kill at this point. Outputs collected up to then.",
+    gpus: "GPUs", gpusHint: "vGPU slices via HAMi. 0 = CPU only.",
+    gpuMem: "GPU Memory (MB, optional)", gpuMemHint: "Leave empty for a full-memory vGPU slice.",
     scheduleJob: "Schedule Job", scheduling: "Scheduling...",
     error: "Error", unknown: "Unknown",
     noJobs: "No jobs yet. Submit one from the left.",
@@ -79,7 +100,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     timeWindowRepeat: "Repeat", repeatDaily: "Daily", repeatWeekdays: "Weekdays", repeatWeekly: "Weekly",
     gpuDefaultQuota: "Default GPU Quota",
     storageDefaultQuota: "Default Storage (GB)", gpuDevices: "GPU Devices",
-    gpuUuid: "UUID", gpuEnabled: "Enabled",
+    gpuUuid: "UUID", gpuEnabled: "Enabled", gpuType: "Type",
     gpuMemTotal: "Memory Total (MB)",
     gpuMemUsed: "Memory Used (MB)", gpuCoresTotal: "Cores Total", gpuCoresUsed: "Cores Used",
     paramsSaved: "Parameters saved.", paramsError: "Failed to save parameters.",
@@ -92,6 +113,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     backToJobs: "Back to Jobs",
     endpoint: "Endpoint", noLogsAdmin: "No logs", noGpus: "No GPU devices configured",
     errorLoading: "Error loading data",
+    gpuPool: "GPU Pool", free: "free", sharing: "sharing", gpuFree: "available", gpuDisabled: "disabled",
   },
   zh: {
     tagline: "延迟调度平台",
@@ -103,9 +125,13 @@ const I18N: Record<Lang, Record<string, string>> = {
     submitJob: "提交作业", jobs: "作业列表",
     jobName: "作业名称", projectZip: "项目文件 (zip)",
     dropzoneHint: "点击或拖拽 .zip 文件到此处",
-    entryCommand: "入口命令", entryCommandHint: "在项目根目录执行的 Shell 命令。",
+    entryCommand: "入口命令", entryCommandHint: "调度时间到时在 GPU Pod 的 /workspace 中执行。",
+    image: "镜像", imageHint: "调试 Pod 与 GPU 运行共用同一基础环境。",
+    sshAccess: "SSH 访问（调试 Pod）", sshCmd: "命令", sshPassword: "密码", sshHint: "你在 /workspace 里装的所有东西都会带到 GPU 运行环境。",
     scheduledStart: "计划启动时间 (本地)", scheduledStartHint: "平台在此时间后约 30 秒内触发。",
     maxRuntime: "最大运行时长 (分钟)", maxRuntimeHint: "超时强制终止，已生成的产物仍会收集。",
+    gpus: "GPU 数量", gpusHint: "HAMi vGPU 切分。0 = 仅用 CPU。",
+    gpuMem: "GPU 显存 (MB，可选)", gpuMemHint: "留空表示整显存的 vGPU 切片。",
     scheduleJob: "调度作业", scheduling: "调度中...",
     error: "错误", unknown: "未知",
     noJobs: "暂无作业。从左侧提交一个。",
@@ -135,7 +161,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     timeWindowRepeat: "重复", repeatDaily: "每天", repeatWeekdays: "工作日", repeatWeekly: "每周",
     gpuDefaultQuota: "默认 GPU 配额",
     storageDefaultQuota: "默认存储 (GB)", gpuDevices: "GPU 设备",
-    gpuUuid: "UUID", gpuEnabled: "启用",
+    gpuUuid: "UUID", gpuEnabled: "启用", gpuType: "型号",
     gpuMemTotal: "显存总量 (MB)",
     gpuMemUsed: "已用显存 (MB)", gpuCoresTotal: "总算力", gpuCoresUsed: "已用算力",
     paramsSaved: "参数已保存。", paramsError: "保存参数失败。",
@@ -148,6 +174,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     backToJobs: "返回作业",
     endpoint: "端点", noLogsAdmin: "暂无日志", noGpus: "未配置 GPU 设备",
     errorLoading: "加载失败",
+    gpuPool: "GPU 资源池", free: "空闲", sharing: "共享容器", gpuFree: "可用", gpuDisabled: "已禁用",
   },
 };
 
@@ -183,6 +210,9 @@ const API = '/api/jobs';
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 let allJobs: Job[] = [];
 let isAdmin = false;
+let gpuQuota = 0;
+let execMode = 'mock';
+let imageChoices: string[] = [];
 let adminViewActive = false;
 let adminTab: 'users' | 'params' | 'logs' | 'monitor' = 'users';
 let logsPage = 0;
@@ -256,8 +286,11 @@ async function checkAuth(): Promise<boolean> {
   try {
     const resp = await fetch('/api/auth/me');
     if (resp.ok) {
-      const user: { id: number; username: string; is_admin: number } = await resp.json();
+      const user: { id: number; username: string; is_admin: number; mode?: string; gpu_quota?: number; images?: string[] } = await resp.json();
       isAdmin = !!user.is_admin;
+      execMode = user.mode || 'mock';
+      gpuQuota = user.gpu_quota ?? 0;
+      if (user.images?.length) imageChoices = user.images;
       showAppView(user.username);
       return true;
     }
@@ -280,10 +313,16 @@ function showAppView(username: string): void {
     adminBtn.style.display = isAdmin ? '' : 'none';
     adminBtn.textContent = t('admin');
   }
+  const badge = $('mode-badge');
+  badge.style.display = execMode === 'mock' ? '' : 'none';
+  const gpusInput = $<HTMLInputElement>('gpus');
+  gpusInput.max = String(gpuQuota);
+  $('image-select').innerHTML = imageChoices.map(i => `<option value="${i}">${i}</option>`).join('');
   setDefaultTime();
   refreshJobs();
+  refreshGpus();
   if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(refreshJobs, 5000);
+  refreshTimer = setInterval(() => { refreshJobs(); refreshGpus(); }, 5000);
 }
 
 function showAuthView(): void {
@@ -352,25 +391,26 @@ async function renderAdminUsers(): Promise<void> {
     </table>`;
 }
 
-function gpuRowHtml(g: any, index: number): string {
+function gpuRowHtml(g: GpuStatus & { enabled?: boolean }): string {
   const enabled = g.enabled !== false;
+  const GiB = 1024 ** 3;
   return `
-    <tr class="gpu-device-row" data-gpu-index="${index}">
+    <tr class="gpu-device-row" data-uuid="${escapeHtml(g.uuid)}">
       <td><input type="checkbox" class="g-enabled" ${enabled ? 'checked' : ''} /></td>
-      <td><code>${escapeHtml(g.name ?? g.uuid ?? '')}</code></td>
-      <td><input type="number" class="g-mem-total" value="${g.memory_total_mb ?? 0}" min="0" style="width:90px" /></td>
-      <td><input type="number" class="g-mem-used" value="${g.memory_used_mb ?? 0}" min="0" style="width:90px" /></td>
-      <td><input type="number" class="g-cores-total" value="${g.cores_total ?? 0}" min="0" style="width:70px" /></td>
-      <td><input type="number" class="g-cores-used" value="${g.cores_used ?? 0}" min="0" style="width:70px" /></td>
+      <td>${escapeHtml(g.node)} #${g.index}</td>
+      <td>${escapeHtml(g.type)}</td>
+      <td>${(g.mem_total / GiB).toFixed(0)} GB</td>
+      <td>${g.cores_total}</td>
     </tr>`;
 }
 
 async function renderAdminParams(): Promise<void> {
   const content = $('admin-content');
   content.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
-  const resp = await fetch('/api/admin/params');
+  const [resp, gpuResp] = await Promise.all([fetch('/api/admin/params'), fetch('/api/gpus')]);
   if (!resp.ok) { content.innerHTML = `<div class="empty">${t('errorLoading')}</div>`; return; }
   const p: any = await resp.json();
+  const gpus: GpuStatus[] = gpuResp.ok ? ((await gpuResp.json()).gpus || []) : [];
   content.innerHTML = `
     <form class="params-form" id="params-form">
       <h2 class="admin-section-title">${t('timeWindow')}</h2>
@@ -406,12 +446,11 @@ async function renderAdminParams(): Promise<void> {
         <label>${t('gpuDevices')}</label>
         <table class="users-table" id="gpu-devices-table">
           <thead><tr>
-            <th>${t('gpuEnabled')}</th><th>${t('gpuUuid')}</th>
-            <th>${t('gpuMemTotal')}</th><th>${t('gpuMemUsed')}</th>
-            <th>${t('gpuCoresTotal')}</th><th>${t('gpuCoresUsed')}</th>
+            <th>${t('gpuEnabled')}</th><th>Node</th>
+            <th>${t('gpuType')}</th><th>${t('gpuMemTotal')}</th><th>${t('gpuCoresTotal')}</th>
           </tr></thead>
           <tbody id="gpu-devices-body">
-            ${(p.gpu_devices as any[]).map((g, i) => gpuRowHtml(g, i)).join('')}
+            ${gpus.map(g => gpuRowHtml(g)).join('') || `<tr><td colspan="5" style="text-align:center;color:var(--text-dim)">${t('noGpus')}</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -513,12 +552,13 @@ async function renderAdminMonitor(): Promise<void> {
     </div>
     <h2 class="admin-section-title">${t('gpuStatus')}</h2>
     ${data.gpus.length ? data.gpus.map((g: any) => {
-      const memPct = g.memory_total_mb > 0 ? (g.memory_used_mb / g.memory_total_mb * 100) : 0;
+      const GiB = 1024 ** 3;
+      const memPct = g.mem_total > 0 ? (g.mem_used / g.mem_total * 100) : 0;
       const corePct = g.cores_total > 0 ? (g.cores_used / g.cores_total * 100) : 0;
       return `
         <div class="gpu-card">
-          <div class="gpu-name">${escapeHtml(g.name)} (id: ${g.id})</div>
-          <div>${t('memoryUsed')}: ${g.memory_used_mb}/${g.memory_total_mb} MB</div>
+          <div class="gpu-name">${escapeHtml(g.node)} #${g.index} <span style="color:var(--text-dim);font-weight:400">${escapeHtml(g.type)}</span></div>
+          <div>${t('memoryUsed')}: ${(g.mem_used / GiB).toFixed(1)}/${(g.mem_total / GiB).toFixed(0)} GB · ${g.shared} ${t('sharing')}</div>
           <div class="gpu-bar"><div class="gpu-bar-fill" style="width:${memPct}%"></div></div>
           <div style="margin-top:8px">${t('coresUsed')}: ${g.cores_used}/${g.cores_total}</div>
           <div class="gpu-bar"><div class="gpu-bar-fill" style="width:${corePct}%"></div></div>
@@ -531,29 +571,6 @@ async function renderAdminMonitor(): Promise<void> {
       <div class="kv-row"><span class="k">${t('objects')}</span><span class="v">${data.s3.object_count}</span></div>
       <div class="kv-row"><span class="k">${t('totalSize')}</span><span class="v">${formatSize(data.s3.total_size_bytes)}</span></div>
     </div>`;
-}
-
-// ── File upload ──────────────────────────────
-function setupUpload(): void {
-  const dropzone = $('dropzone');
-  const fileInput = $<HTMLInputElement>('file-input');
-  const fileDisplay = $('file-display');
-
-  dropzone.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', () => {
-    if (fileInput.files?.length) fileDisplay.textContent = fileInput.files[0].name;
-  });
-  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
-  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-  dropzone.addEventListener('drop', e => {
-    e.preventDefault();
-    dropzone.classList.remove('dragover');
-    const files = e.dataTransfer?.files;
-    if (files && files.length && files[0].name.endsWith('.zip')) {
-      fileInput.files = files;
-      fileDisplay.textContent = files[0].name;
-    }
-  });
 }
 
 // ── Default scheduled_at ─────────────────────
@@ -582,10 +599,43 @@ async function submitJob(e: SubmitEvent): Promise<void> {
     if (result.queued) alert(t('queued'));
     form.reset();
     setDefaultTime();
-    $('file-display').textContent = '';
     await refreshJobs();
   } finally {
     btn.disabled = false; btn.textContent = t('scheduleJob');
+  }
+}
+
+// ── GPU dashboard ────────────────────────────
+async function refreshGpus(): Promise<void> {
+  const el = $('gpu-dashboard');
+  try {
+    const resp = await fetch('/api/gpus');
+    if (!resp.ok) throw new Error();
+    const data: { gpus: GpuStatus[]; error?: string } = await resp.json();
+    if (data.error || !data.gpus.length) {
+      el.innerHTML = execMode === 'mock' ? '' : `<div class="gpu-dash-summary">${t('noGpus')}</div>`;
+      return;
+    }
+    const GiB = 1024 ** 3;
+    const freeCount = data.gpus.filter(g => g.enabled !== false && g.mem_total - g.mem_used > GiB).length;
+    el.innerHTML = `
+      <div class="gpu-dash-summary">${t('gpuPool')}: <strong>${freeCount}</strong> / ${data.gpus.length} ${t('gpuFree')}</div>
+      <div class="gpu-dash">
+        ${data.gpus.map(g => {
+          const off = g.enabled === false;
+          const free = (g.mem_total - g.mem_used) / GiB;
+          const total = g.mem_total / GiB;
+          const pct = g.mem_total > 0 ? (g.mem_used / g.mem_total * 100) : 0;
+          return `
+            <div class="gpu-tile${off ? ' disabled' : ''}">
+              <div class="t"><span>${g.node} #${g.index}</span><span class="${off ? '' : free > 1 ? 'free' : 'full'}">${off ? t('gpuDisabled') : `${free.toFixed(0)}G ${t('free')}`}</span></div>
+              <div class="gpu-bar"><div class="gpu-bar-fill" style="width:${pct}%;${pct > 90 ? 'background:var(--red)' : ''}"></div></div>
+              <div class="sub">${g.mem_used / GiB | 0}/${total.toFixed(0)}G · ${g.cores_used}/${g.cores_total} ${t('coresUsed')} · ${g.shared} ${t('sharing')}</div>
+            </div>`;
+        }).join('')}
+      </div>`;
+  } catch {
+    el.innerHTML = '';
   }
 }
 
@@ -608,7 +658,7 @@ function renderJobs(): void {
   if (statusFilter) jobs = jobs.filter(j => j.status === statusFilter);
   if (q) jobs = jobs.filter(j =>
     (j.name || '').toLowerCase().includes(q) ||
-    (j.filename || '').toLowerCase().includes(q)
+    (j.image || '').toLowerCase().includes(q)
   );
 
   const list = $('job-list');
@@ -627,9 +677,10 @@ function renderJobs(): void {
         <div class="info">
           <div class="name">${escapeHtml(j.name)}</div>
           <div class="meta">
-            <span>📁 ${escapeHtml(j.filename || '')}</span>
+            <span>🖼 ${escapeHtml(j.image || '')}</span>
             <span>⏰ ${scheduled}</span>
             ${j.started_at ? `<span>▶ ${started}</span>` : ''}
+            ${j.gpus ? `<span>🎮 ${j.gpus} GPU${j.gpu_mem_mb ? ` · ${j.gpu_mem_mb}MB` : ''}</span>` : ''}
             ${j.output_count ? `<span>📦 ${j.output_count} ${t('files')}</span>` : ''}
           </div>
         </div>
@@ -663,9 +714,10 @@ async function openModal(jobId: string): Promise<void> {
     <div class="modal-section">
       <div class="kv-grid">
         <div class="kv"><span class="k">${t('status')}</span><span class="v"><span class="status status-${job.status}">${statusLabel(job.status)}</span></span></div>
-        <div class="kv"><span class="k">${t('originalFile')}</span><span class="v">${escapeHtml(job.filename || '—')}</span></div>
+        <div class="kv"><span class="k">${t('image')}</span><span class="v">${escapeHtml(job.image || '—')}</span></div>
         <div class="kv"><span class="k">${t('entryCmd')}</span><span class="v"><code>${escapeHtml(job.entry_command || '—')}</code></span></div>
         <div class="kv"><span class="k">${t('maxRuntimeLabel')}</span><span class="v">${job.timeout_minutes || '—'} ${t('min')}</span></div>
+        <div class="kv"><span class="k">${t('gpus')}</span><span class="v">${job.gpus ? `${job.gpus}${job.gpu_mem_mb ? ` · ${job.gpu_mem_mb} MB` : ''}` : '0 (CPU)'}</span></div>
         <div class="kv"><span class="k">${t('scheduledUtc')}</span><span class="v">${job.scheduled_at ? new Date(job.scheduled_at).toLocaleString() : '—'}</span></div>
         <div class="kv"><span class="k">${t('started')}</span><span class="v">${job.started_at ? new Date(job.started_at).toLocaleString() : '—'}</span></div>
         <div class="kv"><span class="k">${t('finished')}</span><span class="v">${job.finished_at ? new Date(job.finished_at).toLocaleString() : '—'}</span></div>
@@ -674,6 +726,17 @@ async function openModal(jobId: string): Promise<void> {
       </div>
     </div>`;
 
+  if (job.ssh_port && (job.status === 'pending' || job.status === 'running')) {
+    const cmd = `ssh root@${location.hostname} -p ${job.ssh_port}`;
+    html += `
+      <div class="modal-section"><h4>${t('sshAccess')}</h4>
+        <div class="kv-grid">
+          <div class="kv"><span class="k">${t('sshCmd')}</span><span class="v"><code>${cmd}</code></span></div>
+          <div class="kv"><span class="k">${t('sshPassword')}</span><span class="v"><code>${escapeHtml(job.ssh_password || '')}</code></span></div>
+        </div>
+        <div class="hint" style="margin-top:8px">${t('sshHint')}</div>
+      </div>`;
+  }
   if (job.status === 'pending') {
     html += `<div class="modal-section"><button class="btn-cancel" data-job-id="${job.id}">${t('cancelJob')}</button></div>`;
   }
@@ -730,7 +793,6 @@ function formatSize(bytes: number): string {
 // ── Init ─────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   applyI18n();
-  setupUpload();
 
   $('tab-login').addEventListener('click', () => switchAuthTab('login'));
   $('tab-register').addEventListener('click', () => switchAuthTab('register'));
@@ -740,6 +802,9 @@ document.addEventListener('DOMContentLoaded', () => {
   $('lang-toggle-app').addEventListener('click', toggleLang);
   $('btn-logout').addEventListener('click', doLogout);
   $('job-form').addEventListener('submit', submitJob);
+  $('gpus').addEventListener('input', () => {
+    $('gpu-mem-field').style.display = parseInt($<HTMLInputElement>('gpus').value) > 0 ? '' : 'none';
+  });
   $('job-search').addEventListener('input', filterJobs);
   $('job-status-filter').addEventListener('change', filterJobs);
   $('modal-close').addEventListener('click', closeModal);
@@ -812,14 +877,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const gpuRows = document.querySelectorAll('#gpu-devices-body .gpu-device-row');
     body.gpu_devices = Array.from(gpuRows).map(row => {
       const el = row as HTMLElement;
-      const uuidEl = el.querySelector('code');
       return {
+        uuid: el.dataset.uuid,
         enabled: (el.querySelector('.g-enabled') as HTMLInputElement).checked,
-        name: uuidEl ? uuidEl.textContent || '' : '',
-        memory_total_mb: parseInt((el.querySelector('.g-mem-total') as HTMLInputElement).value) || 0,
-        memory_used_mb: parseInt((el.querySelector('.g-mem-used') as HTMLInputElement).value) || 0,
-        cores_total: parseInt((el.querySelector('.g-cores-total') as HTMLInputElement).value) || 0,
-        cores_used: parseInt((el.querySelector('.g-cores-used') as HTMLInputElement).value) || 0,
       };
     });
     const r = await fetch('/api/admin/params', {

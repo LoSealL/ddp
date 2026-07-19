@@ -1,3 +1,5 @@
+import asyncio
+import os
 import uuid
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -10,16 +12,22 @@ from fastapi.staticfiles import StaticFiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-from . import db, auth, admin, timecheck
+from . import db, auth, admin, timecheck, gpu, images
 from .storage import Storage
-from .executor import MockExecutor, UPLOAD_DIR
+from .executor import MockExecutor
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
 
+EXECUTOR_MODE = os.environ.get("DDP_EXECUTOR", "mock")
+
 storage = Storage()
-executor = MockExecutor(storage)
+if EXECUTOR_MODE == "k8s":
+    from .k8s_executor import K8sExecutor
+    executor = K8sExecutor(storage)
+else:
+    executor = MockExecutor(storage)
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 
@@ -35,6 +43,9 @@ async def lifespan(app: FastAPI):
                 executor.execute, trigger, args=[job["id"]], id=job["id"],
                 replace_existing=True,
             )
+        elif job["status"] == "running" and hasattr(executor, "watch"):
+            # k8s jobs keep running across backend restarts; resume watching
+            asyncio.create_task(executor.watch(job["id"]))
     if not scheduler.running:
         scheduler.start()
     try:
@@ -106,7 +117,29 @@ async def logout(session: str | None = Cookie(None)):
 
 @app.get("/api/auth/me")
 async def me(user: dict = Depends(auth.get_current_user)):
-    return {"id": user["id"], "username": user["username"], "is_admin": user.get("is_admin", 0)}
+    full = db.get_user_by_id(user["id"]) or {}
+    quota = full.get("gpu_quota_override")
+    if quota is None:
+        quota = db.get_param("gpu_default_quota") or 0
+    try:
+        image_list = images.list_images()
+    except Exception:
+        image_list = []
+    return {"id": user["id"], "username": user["username"], "is_admin": user.get("is_admin", 0),
+            "mode": EXECUTOR_MODE, "gpu_quota": quota, "images": image_list}
+
+
+@app.get("/api/gpus")
+async def list_gpus(user: dict = Depends(auth.get_current_user)):
+    try:
+        gpus = await asyncio.to_thread(gpu.fetch_gpu_status)
+    except Exception as e:
+        return {"gpus": [], "error": str(e)}
+    disabled = {d.get("uuid") for d in db.get_all_params().get("gpu_devices", [])
+                if isinstance(d, dict) and not d.get("enabled", True)}
+    for g in gpus:
+        g["enabled"] = g["uuid"] not in disabled
+    return {"gpus": gpus}
 
 
 # ── Jobs (protected) ─────────────────────────────────
@@ -114,23 +147,33 @@ async def me(user: dict = Depends(auth.get_current_user)):
 @app.post("/api/jobs")
 async def create_job(
     user: dict = Depends(auth.get_current_user),
-    file: UploadFile = File(...),
     name: str = Form(...),
+    image: str = Form(...),
     entry_command: str = Form("python main.py"),
     scheduled_at: str = Form(...),
     timeout_minutes: int = Form(60),
+    gpus: int = Form(0),
+    gpu_mem_mb: int | None = Form(None),
 ):
-    if not file.filename or not file.filename.endswith(".zip"):
-        raise HTTPException(400, "Must upload a .zip file")
+    try:
+        known = images.list_images()
+    except Exception:
+        known = []
+    if known and image not in known:
+        raise HTTPException(400, f"Unknown image: {image}")
+    if gpus < 0:
+        raise HTTPException(400, "gpus must be >= 0")
+    full_user = db.get_user_by_id(user["id"]) or {}
+    quota = full_user.get("gpu_quota_override")
+    if quota is None:
+        quota = db.get_param("gpu_default_quota") or 0
+    if gpus > quota:
+        raise HTTPException(403, f"GPU quota exceeded: requested {gpus}, allowed {quota}")
+    storage_quota = full_user.get("storage_quota_override_gb")
+    if storage_quota is None:
+        storage_quota = db.get_param("storage_default_quota_gb") or 10
 
     job_id = str(uuid.uuid4())
-    zip_path = UPLOAD_DIR / f"{job_id}.zip"
-    zip_path.parent.mkdir(parents=True, exist_ok=True)
-    content = await file.read()
-    zip_path.write_bytes(content)
-
-    # Persist uploaded code to S3
-    storage.upload_bytes(f"jobs/{job_id}/code/{file.filename}", content)
 
     # Parse local datetime, check time window, convert to UTC
     local_dt = datetime.fromisoformat(scheduled_at)
@@ -140,7 +183,19 @@ async def create_job(
     dt_utc = adjusted_dt.astimezone(timezone.utc)
     scheduled_utc = dt_utc.isoformat()
 
-    db.create_job(job_id, user["id"], name, file.filename, entry_command, scheduled_utc, timeout_minutes)
+    ssh_info = {}
+    if hasattr(executor, "prepare"):
+        try:
+            ssh_info = await executor.prepare(
+                {"id": job_id, "user_id": user["id"], "image": image,
+                 "storage_gb": storage_quota})
+        except Exception as e:
+            db.log_event("ERROR", "job", f"Debug env prepare failed: {e}", user_id=user["id"])
+            raise HTTPException(502, f"Failed to create debug environment: {e}")
+
+    db.create_job(job_id, user["id"], name, image, entry_command, scheduled_utc,
+                  timeout_minutes, gpus=gpus, gpu_mem_mb=gpu_mem_mb if gpus else None,
+                  ssh_port=ssh_info.get("ssh_port"), ssh_password=ssh_info.get("ssh_password"))
 
     db.log_event("INFO", "job", f"Job submitted: {name} ({job_id})", user_id=user["id"])
     if was_queued:
@@ -152,7 +207,7 @@ async def create_job(
         args=[job_id], id=job_id, replace_existing=True,
     )
 
-    return {"id": job_id, "status": "pending", "queued": was_queued}
+    return {"id": job_id, "status": "pending", "queued": was_queued, **ssh_info}
 
 
 @app.get("/api/jobs")
@@ -235,12 +290,22 @@ async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
             scheduler.remove_job(job_id)
         except Exception:
             pass
+        if hasattr(executor, "cleanup"):
+            await executor.cleanup(job_id)
         db.update_job(job_id, status="cancelled")
         db.log_event("INFO", "job", f"Job cancelled: {job_id}", user_id=user["id"])
     elif job["status"] in ("running",):
-        raise HTTPException(409, "Cannot cancel a running job in mock mode")
+        if hasattr(executor, "cancel"):
+            await executor.cancel(job_id)
+            db.update_job(job_id, status="cancelled",
+                          finished_at=datetime.now(timezone.utc).isoformat())
+            db.log_event("INFO", "job", f"Running job cancelled: {job_id}", user_id=user["id"])
+        else:
+            raise HTTPException(409, "Cannot cancel a running job in mock mode")
     else:
         storage.delete_prefix(f"jobs/{job_id}/")
+        if hasattr(executor, "cleanup"):
+            await executor.cleanup(job_id)
         db.delete_job(job_id)
         db.log_event("INFO", "job", f"Job deleted: {job_id}", user_id=user["id"])
     return {"ok": True}

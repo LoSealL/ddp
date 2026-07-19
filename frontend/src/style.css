@@ -335,6 +335,17 @@ header .user-area .username strong { color: var(--text); }
 }
 .logs-pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* GPU dashboard */
+.gpu-dash-summary { font-size: 13px; color: var(--text-dim); margin-bottom: 8px; }
+.gpu-dash-summary strong { color: var(--green); }
+.gpu-dash { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.gpu-tile { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12px; }
+.gpu-tile .t { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 6px; }
+.gpu-tile .free { color: var(--green); }
+.gpu-tile .full { color: var(--red); }
+.gpu-tile .sub { color: var(--text-dim); margin-top: 4px; }
+.gpu-tile.disabled { opacity: 0.45; }
+
 /* Monitoring */
 .monitor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
 .monitor-card {
