@@ -86,24 +86,26 @@
           <input type="datetime-local" name="scheduled_at" id="scheduled_at" required />
           <div class="hint" data-i18n="scheduledStartHint">Platform fires within ~30s of this time.</div>
         </div>
-        <div class="field">
-          <label data-i18n="repeat">Repeat</label>
-          <div class="repeat-options">
-            <label class="repeat-radio"><input type="radio" name="repeat_type" value="none" checked /> <span data-i18n="repeatNone">One-off</span></label>
-            <label class="repeat-radio"><input type="radio" name="repeat_type" value="daily" /> <span data-i18n="repeatDaily">Daily</span></label>
-            <label class="repeat-radio"><input type="radio" name="repeat_type" value="weekly" /> <span data-i18n="repeatWeekly">Weekly</span></label>
+        <div class="repeat-block">
+          <div class="field">
+            <label data-i18n="repeat">Repeat</label>
+            <div class="repeat-options">
+              <label class="repeat-radio"><input type="radio" name="repeat_type" value="none" checked /> <span data-i18n="repeatNone">One-off</span></label>
+              <label class="repeat-radio"><input type="radio" name="repeat_type" value="daily" /> <span data-i18n="repeatDaily">Daily</span></label>
+              <label class="repeat-radio"><input type="radio" name="repeat_type" value="weekly" /> <span data-i18n="repeatWeekly">Weekly</span></label>
+            </div>
           </div>
-        </div>
-        <div class="field" id="repeat-weekdays-field" style="display:none">
-          <label data-i18n="repeatWeekdaysLabel">Weekdays</label>
-          <div class="weekday-checks">
-            <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="1" /> <span data-i18n="mon">Mon</span></label>
-            <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="2" /> <span data-i18n="tue">Tue</span></label>
-            <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="3" /> <span data-i18n="wed">Wed</span></label>
-            <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="4" /> <span data-i18n="thu">Thu</span></label>
-            <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="5" /> <span data-i18n="fri">Fri</span></label>
-            <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="6" /> <span data-i18n="sat">Sat</span></label>
-            <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="7" /> <span data-i18n="sun">Sun</span></label>
+          <div class="field" id="repeat-weekdays-field" style="display:none">
+            <label data-i18n="repeatWeekdaysLabel">Weekdays</label>
+            <div class="weekday-checks">
+              <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="1" /> <span data-i18n="mon">Mon</span></label>
+              <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="2" /> <span data-i18n="tue">Tue</span></label>
+              <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="3" /> <span data-i18n="wed">Wed</span></label>
+              <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="4" /> <span data-i18n="thu">Thu</span></label>
+              <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="5" /> <span data-i18n="fri">Fri</span></label>
+              <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="6" /> <span data-i18n="sat">Sat</span></label>
+              <label class="weekday"><input type="checkbox" name="repeat_weekdays" value="7" /> <span data-i18n="sun">Sun</span></label>
+            </div>
           </div>
         </div>
         <div class="field">

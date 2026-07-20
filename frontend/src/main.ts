@@ -959,18 +959,20 @@ function showEditForm(jobId: string): void {
       <div class="field"><label>${t('jobName')}</label><input name="name" value="${escapeHtml(job.name)}" required /></div>
       <div class="field"><label>${t('entryCommand')}</label><input name="entry_command" value="${escapeHtml(job.entry_command)}" required /></div>
       <div class="field"><label>${t('scheduledStart')}</label><input type="datetime-local" name="scheduled_at" value="${toLocalInput(job.scheduled_at)}" required /></div>
-      <div class="field">
-        <label>${t('repeat')}</label>
-        <div class="repeat-options">
-          <label class="repeat-radio"><input type="radio" name="repeat_type" value="none" ${rt === 'none' ? 'checked' : ''} /> <span>${t('repeatNone')}</span></label>
-          <label class="repeat-radio"><input type="radio" name="repeat_type" value="daily" ${rt === 'daily' ? 'checked' : ''} /> <span>${t('repeatDaily')}</span></label>
-          <label class="repeat-radio"><input type="radio" name="repeat_type" value="weekly" ${rt === 'weekly' ? 'checked' : ''} /> <span>${t('repeatWeekly')}</span></label>
+      <div class="repeat-block">
+        <div class="field">
+          <label>${t('repeat')}</label>
+          <div class="repeat-options">
+            <label class="repeat-radio"><input type="radio" name="repeat_type" value="none" ${rt === 'none' ? 'checked' : ''} /> <span>${t('repeatNone')}</span></label>
+            <label class="repeat-radio"><input type="radio" name="repeat_type" value="daily" ${rt === 'daily' ? 'checked' : ''} /> <span>${t('repeatDaily')}</span></label>
+            <label class="repeat-radio"><input type="radio" name="repeat_type" value="weekly" ${rt === 'weekly' ? 'checked' : ''} /> <span>${t('repeatWeekly')}</span></label>
+          </div>
         </div>
-      </div>
-      <div class="field" id="edit-repeat-weekdays-field" style="display:${rt === 'weekly' ? '' : 'none'}">
-        <label>${t('repeatWeekdaysLabel')}</label>
-        <div class="weekday-checks">
-          ${['1','2','3','4','5','6','7'].map(n => `<label class="weekday"><input type="checkbox" name="repeat_weekdays" value="${n}" ${dayChecked(n)} /> <span>${t(['mon','tue','wed','thu','fri','sat','sun'][Number(n)-1])}</span></label>`).join('')}
+        <div class="field" id="edit-repeat-weekdays-field" style="display:${rt === 'weekly' ? '' : 'none'}">
+          <label>${t('repeatWeekdaysLabel')}</label>
+          <div class="weekday-checks">
+            ${['1','2','3','4','5','6','7'].map(n => `<label class="weekday"><input type="checkbox" name="repeat_weekdays" value="${n}" ${dayChecked(n)} /> <span>${t(['mon','tue','wed','thu','fri','sat','sun'][Number(n)-1])}</span></label>`).join('')}
+          </div>
         </div>
       </div>
       <div class="field"><label>${t('maxRuntime')}</label><input type="number" name="timeout_minutes" value="${job.timeout_minutes}" min="1" max="1440" /></div>

@@ -134,6 +134,52 @@ header .user-area .username strong { color: var(--text); }
 .field-row { display: flex; gap: 12px; }
 .field-row .field { flex: 1; }
 
+/* Repeat selection block — grouped visual container with button-group options */
+.repeat-block {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+.repeat-block .field { margin-bottom: 0; }
+.repeat-block .field + .field { margin-top: 10px; }
+.repeat-block .field > label { margin-bottom: 6px; font-size: 12px; }
+
+.repeat-options, .weekday-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.repeat-radio, .weekday {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.repeat-radio input, .weekday input {
+  position: absolute;
+  opacity: 0;
+  width: 0; height: 0;
+  pointer-events: none;
+}
+.repeat-radio:has(input:checked),
+.weekday:has(input:checked) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.repeat-radio:hover, .weekday:hover {
+  border-color: var(--accent);
+}
+
 .btn-submit {
   width: 100%; background: var(--accent); color: #fff; border: none;
   border-radius: 8px; padding: 12px; font-size: 14px; font-weight: 600;
