@@ -269,10 +269,12 @@ class TestAdminJobManagement:
         assert r.status_code == 200
         assert admin_client.get(f"/api/admin/jobs").json()[0]["status"] == "cancelled"
 
-    def test_admin_delete_non_pending_rejected(self, admin_client, normal_client):
+    def test_admin_delete_terminal_job(self, admin_client, normal_client):
         job_id = self._submit(normal_client, "user job")
-        normal_client.delete(f"/api/jobs/{job_id}")  # cancelled
-        assert admin_client.delete(f"/api/admin/jobs/{job_id}").status_code == 409
+        normal_client.delete(f"/api/jobs/{job_id}")  # cancelled (terminal)
+        r = admin_client.delete(f"/api/admin/jobs/{job_id}")
+        assert r.status_code == 200
+        assert admin_client.get("/api/admin/jobs").json() == []
 
     def test_reorder(self, admin_client, normal_client):
         a = self._submit(normal_client, "A")

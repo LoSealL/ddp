@@ -15,6 +15,7 @@ storage = Storage()
 ALLOWED_PARAMS = {
     "time_window_start", "time_window_end", "time_window_repeat",
     "gpu_default_quota", "storage_default_quota_gb", "gpu_devices",
+    "tz_offset_hours", "cpu_default_quota", "memory_default_quota_gb",
 }
 
 
@@ -22,6 +23,8 @@ class UserUpdate(BaseModel):
     is_admin: Optional[int] = None
     gpu_quota_override: Optional[int] = None
     storage_quota_override_gb: Optional[float] = None
+    cpu_quota_override: Optional[float] = None
+    memory_quota_override_gb: Optional[float] = None
 
     @field_validator("is_admin")
     @classmethod
@@ -45,7 +48,8 @@ async def update_user_endpoint(user_id: int, body: UserUpdate, user: dict = Depe
         raise HTTPException(404, "User not found")
 
     updates = {}
-    for field in ("is_admin", "gpu_quota_override", "storage_quota_override_gb"):
+    for field in ("is_admin", "gpu_quota_override", "storage_quota_override_gb",
+                  "cpu_quota_override", "memory_quota_override_gb"):
         val = getattr(body, field)
         if val is not None or field in body.model_fields_set:
             updates[field] = val
@@ -103,6 +107,18 @@ async def update_params(body: dict, user: dict = Depends(auth.require_admin)):
         if body["time_window_repeat"] not in ("daily", "weekly", "weekdays"):
             raise HTTPException(400, "time_window_repeat must be daily, weekly, or weekdays")
 
+    for key in ("tz_offset_hours", "cpu_default_quota"):
+        if key in body:
+            try:
+                body[key] = str(int(body[key]))
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"{key} must be an integer")
+    if "memory_default_quota_gb" in body:
+        try:
+            body["memory_default_quota_gb"] = str(float(body["memory_default_quota_gb"]))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "memory_default_quota_gb must be a number")
+
     if "gpu_devices" in body:
         if not isinstance(body["gpu_devices"], list) or \
                 not all(isinstance(d, dict) and "uuid" in d for d in body["gpu_devices"]):
@@ -131,6 +147,13 @@ async def list_admin_logs(
     logs = db.list_logs(level=level, category=category, limit=limit, offset=offset)
     total = db.count_logs(level=level, category=category)
     return {"logs": logs, "total": total}
+
+
+@router.delete("/logs")
+async def clear_admin_logs(user: dict = Depends(auth.require_admin)):
+    db.clear_logs()
+    db.log_event("WARNING", "admin", "System logs cleared", user_id=user["id"])
+    return {"ok": True}
 
 
 # ── Monitoring ──────────────────────────────────

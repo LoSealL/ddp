@@ -33,7 +33,10 @@ class K8sExecutor:
 
     def __init__(self, storage: Storage):
         self.storage = storage
-        config.load_kube_config()
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
         self.batch = client.BatchV1Api()
         self.core = client.CoreV1Api()
 
@@ -105,8 +108,10 @@ class K8sExecutor:
                          client.V1EnvVar("NO_PROXY", "localhost,127.0.0.1,172.16.0.0/16,10.0.0.0/8")],
                     ports=[client.V1ContainerPort(22)],
                     resources=client.V1ResourceRequirements(
-                        requests={"cpu": "1", "memory": "2Gi"},
-                        limits={"cpu": "8", "memory": "32Gi"}),
+                        requests={"cpu": str(job.get("cpu") or 2),
+                                  "memory": f"{job.get('memory_gb') or 4}Gi"},
+                        limits={"cpu": str(job.get("cpu") or 2),
+                                "memory": f"{job.get('memory_gb') or 4}Gi"}),
                     volume_mounts=[client.V1VolumeMount(name="workspace", mount_path="/workspace")])],
                 volumes=[client.V1Volume(
                     name="workspace",
@@ -145,7 +150,7 @@ class K8sExecutor:
                         pass
                 elif phase in ("Failed", "Succeeded"):
                     db.update_job(job_id, status="failed",
-                                  finished_at=datetime.now(timezone.utc).isoformat(),
+                                  finished_at=db.now_iso(),
                                   error="debug pod exited before becoming ready")
                     return
             except ApiException as e:
@@ -154,7 +159,7 @@ class K8sExecutor:
                 raise
             await asyncio.sleep(5)
         db.update_job(job_id, status="failed",
-                      finished_at=datetime.now(timezone.utc).isoformat(),
+                      finished_at=db.now_iso(),
                       error="debug pod did not become ready in time")
 
     # ── phase 2: scheduled gpu run ──────────────
@@ -162,7 +167,7 @@ class K8sExecutor:
     def _gpu_job(self, job: dict) -> client.V1Job:
         job_id = job["id"]
         name = self._name(job_id)
-        limits = {"cpu": "8", "memory": "32Gi"}
+        limits = {"cpu": str(job.get("cpu") or 2), "memory": f"{job.get('memory_gb') or 4}Gi"}
         if job.get("gpus"):
             limits["nvidia.com/gpu"] = job["gpus"]
             if job.get("gpu_mem_mb"):
@@ -178,7 +183,9 @@ class K8sExecutor:
                  client.V1EnvVar("NO_PROXY", "localhost,127.0.0.1,172.16.0.0/16,10.0.0.0/8")],
             ports=[client.V1ContainerPort(22)],
             resources=client.V1ResourceRequirements(
-                requests={"cpu": "1", "memory": "2Gi"}, limits=limits),
+                requests={"cpu": str(job.get("cpu") or 2),
+                          "memory": f"{job.get('memory_gb') or 4}Gi"},
+                limits=limits),
             volume_mounts=[client.V1VolumeMount(name="workspace", mount_path="/workspace")])
         pod_spec = client.V1PodSpec(
             restart_policy="Never",
@@ -202,7 +209,7 @@ class K8sExecutor:
         if not job:
             return
         db.update_job(job_id, status="running",
-                      started_at=datetime.now(timezone.utc).isoformat())
+                      started_at=db.now_iso())
         db.log_event("DEBUG", "system", f"Job started (k8s): {job_id}")
         name = self._name(job_id)
         # debug pod makes way for the gpu job (same PVC can't serve both)
@@ -212,7 +219,7 @@ class K8sExecutor:
         except ApiException as e:
             if e.status != 409:
                 db.update_job(job_id, status="failed",
-                              finished_at=datetime.now(timezone.utc).isoformat(),
+                              finished_at=db.now_iso(),
                               error=f"k8s create failed: {e.reason}")
                 db.log_event("ERROR", "system", f"Job {job_id} create failed: {e.reason}")
                 return
@@ -220,12 +227,32 @@ class K8sExecutor:
 
     async def watch(self, job_id: str):
         """Poll gpu job until terminal, collect logs+outputs, update DB."""
+        try:
+            await self._watch(job_id)
+        except Exception as e:
+            # never leave a job stuck in "running" because the watcher died
+            job = db.get_job(job_id)
+            if job and job["status"] == "running":
+                db.update_job(job_id, status="failed",
+                              finished_at=db.now_iso(), error=f"watcher error: {e}")
+            db.log_event("ERROR", "system", f"Watcher died for {job_id}: {e}")
+
+    async def _watch(self, job_id: str):
         name = self._name(job_id)
         while True:
             try:
                 st = await asyncio.to_thread(self.batch.read_namespaced_job_status, name, NAMESPACE)
             except ApiException as e:
-                if e.status == 404:  # deleted underneath us (cancel)
+                if e.status == 404:
+                    # job deleted out from under us (manual kubectl delete or
+                    # ttl cleanup). Only mark failed if still running — the
+                    # cancel path deletes the job too and sets 'cancelled'.
+                    job = db.get_job(job_id)
+                    if job and job["status"] == "running":
+                        db.update_job(job_id, status="failed",
+                                      finished_at=db.now_iso(),
+                                      error="k8s job deleted externally")
+                        db.log_event("WARNING", "system", f"Job {job_id} disappeared from cluster")
                     return
                 raise
             status = st.status
@@ -246,7 +273,7 @@ class K8sExecutor:
         await self._collect_outputs(job_id)
         objects = self.storage.list_objects(self.storage.bucket, f"jobs/{job_id}/output/")
         db.update_job(job_id, status=result,
-                      finished_at=datetime.now(timezone.utc).isoformat(),
+                      finished_at=db.now_iso(),
                       output_count=len(objects),
                       s3_prefix=f"{BUCKET}/jobs/{job_id}/",
                       error=error)
@@ -302,9 +329,13 @@ class K8sExecutor:
             runner = [p for p in pods.items if p.metadata.name != self._name(job_id)]
             if not runner:
                 return
-            log = await asyncio.to_thread(
-                self.core.read_namespaced_pod_log, runner[0].metadata.name, NAMESPACE)
-            self.storage.upload_bytes(f"jobs/{job_id}/logs/run.log", log.encode())
+            # _preload_content=False: the default path returns the *repr* of
+            # the raw bytes (content starts with b'), not decoded text
+            resp = await asyncio.to_thread(
+                self.core.read_namespaced_pod_log, runner[0].metadata.name, NAMESPACE,
+                _preload_content=False)
+            self.storage.upload_bytes(f"jobs/{job_id}/logs/run.log",
+                                      resp.data.decode("utf-8", errors="replace").encode())
         except Exception as e:
             db.log_event("WARNING", "system", f"Log collection failed for {job_id}: {e}")
 

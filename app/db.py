@@ -1,10 +1,36 @@
 import json
+import os
 import sqlite3
+import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "ddp.db"
+
+# All timestamps are local wall-clock time; no UTC conversion anywhere.
+# Offset is an admin-tunable system param (tz_offset_hours), default +8.
+_tz_cache: tuple[float, timezone | None] = (0.0, None)
+
+
+def get_tz() -> timezone:
+    global _tz_cache
+    ts, tz = _tz_cache
+    if tz is None or time.time() - ts > 30:
+        off = 8
+        try:
+            v = get_param("tz_offset_hours")
+            if v is not None:
+                off = int(v)
+        except Exception:
+            pass
+        tz = timezone(timedelta(hours=off))
+        _tz_cache = (time.time(), tz)
+    return tz
+
+
+def now_iso():
+    return datetime.now(get_tz()).isoformat()
 
 
 def get_db():
@@ -15,7 +41,7 @@ def get_db():
 
 
 def init_db():
-    now = datetime.now(timezone.utc).isoformat()
+    now = now_iso()
     conn = get_db()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
@@ -91,6 +117,14 @@ def init_db():
         conn.execute("ALTER TABLE jobs ADD COLUMN output_path TEXT NOT NULL DEFAULT 'output'")
     except sqlite3.OperationalError:
         pass
+    for ddl in ["ALTER TABLE jobs ADD COLUMN cpu REAL NOT NULL DEFAULT 2",
+                "ALTER TABLE jobs ADD COLUMN memory_gb REAL NOT NULL DEFAULT 4",
+                "ALTER TABLE users ADD COLUMN cpu_quota_override REAL",
+                "ALTER TABLE users ADD COLUMN memory_quota_override_gb REAL"]:
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError:
+            pass
     try:
         conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
@@ -111,6 +145,9 @@ def init_db():
         ("gpu_default_quota", "1"),
         ("storage_default_quota_gb", "10.0"),
         ("gpu_devices", "[]"),
+        ("tz_offset_hours", "8"),
+        ("cpu_default_quota", "8"),
+        ("memory_default_quota_gb", "32"),
     ]
     for key, value in default_params:
         conn.execute(
@@ -123,15 +160,15 @@ def init_db():
 
 def create_job(job_id, user_id, name, image, entry_command, scheduled_at, timeout_minutes,
                gpus=0, gpu_mem_mb=None, ssh_port=None, ssh_password=None, status="pending",
-               output_path="output"):
-    now = datetime.now(timezone.utc).isoformat()
+               output_path="output", cpu=2, memory_gb=4):
+    now = now_iso()
     conn = get_db()
     conn.execute("""
         INSERT INTO jobs (id, user_id, name, filename, image, entry_command, scheduled_at, timeout_minutes,
-                          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, created_at)
-        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, cpu, memory_gb, created_at)
+        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (job_id, user_id, name, image, entry_command, scheduled_at, timeout_minutes,
-          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, now))
+          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, cpu, memory_gb, now))
     conn.commit()
     conn.close()
 
@@ -172,7 +209,7 @@ def delete_job(job_id):
 # ── Users & Sessions ─────────────────────────────────
 
 def create_user(username, password_hash, salt):
-    now = datetime.now(timezone.utc).isoformat()
+    now = now_iso()
     conn = get_db()
     is_first = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
     cursor = conn.execute(
@@ -200,7 +237,7 @@ def get_user_by_id(user_id):
 
 
 def create_session(token, user_id, expires_at):
-    now = datetime.now(timezone.utc).isoformat()
+    now = now_iso()
     conn = get_db()
     conn.execute(
         "INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
@@ -216,7 +253,7 @@ def get_user_by_session(token):
         SELECT u.id, u.username, u.is_admin FROM users u
         JOIN sessions s ON u.id = s.user_id
         WHERE s.token = ? AND s.expires_at > ?
-    """, (token, datetime.now(timezone.utc).isoformat())).fetchone()
+    """, (token, now_iso())).fetchone()
     conn.close()
     return dict(row) if row else None
 
@@ -233,14 +270,16 @@ def delete_session(token):
 def list_users():
     conn = get_db()
     rows = conn.execute("""
-        SELECT id, username, is_admin, gpu_quota_override, storage_quota_override_gb, created_at
+        SELECT id, username, is_admin, gpu_quota_override, storage_quota_override_gb,
+               cpu_quota_override, memory_quota_override_gb, created_at
         FROM users ORDER BY id
     """).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-_ALLOWED_USER_COLS = {"is_admin", "gpu_quota_override", "storage_quota_override_gb"}
+_ALLOWED_USER_COLS = {"is_admin", "gpu_quota_override", "storage_quota_override_gb",
+                      "cpu_quota_override", "memory_quota_override_gb"}
 
 
 def update_user(user_id, **kwargs):
@@ -263,6 +302,14 @@ def delete_user(user_id):
     conn.close()
 
 
+def update_user_password(user_id, password_hash, salt):
+    conn = get_db()
+    conn.execute("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
+                 (password_hash, salt, user_id))
+    conn.commit()
+    conn.close()
+
+
 def count_admins():
     conn = get_db()
     count = conn.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1").fetchone()[0]
@@ -277,10 +324,12 @@ def get_all_params():
     rows = conn.execute("SELECT key, value FROM system_params").fetchall()
     conn.close()
     params = {r["key"]: r["value"] for r in rows}
-    if "gpu_default_quota" in params:
-        params["gpu_default_quota"] = int(params["gpu_default_quota"])
-    if "storage_default_quota_gb" in params:
-        params["storage_default_quota_gb"] = float(params["storage_default_quota_gb"])
+    for key in ("gpu_default_quota", "tz_offset_hours", "cpu_default_quota"):
+        if key in params:
+            params[key] = int(params[key])
+    for key in ("storage_default_quota_gb", "memory_default_quota_gb"):
+        if key in params:
+            params[key] = float(params[key])
     if "gpu_devices" in params:
         params["gpu_devices"] = json.loads(params["gpu_devices"])
     return params
@@ -293,15 +342,15 @@ def get_param(key):
     if not row:
         return None
     value = row["value"]
-    if key == "gpu_default_quota":
+    if key in ("gpu_default_quota", "tz_offset_hours", "cpu_default_quota"):
         return int(value)
-    if key == "storage_default_quota_gb":
+    if key in ("storage_default_quota_gb", "memory_default_quota_gb"):
         return float(value)
     return value
 
 
 def set_param(key, value, user_id=None):
-    now = datetime.now(timezone.utc).isoformat()
+    now = now_iso()
     conn = get_db()
     conn.execute("""
         INSERT INTO system_params (key, value, updated_at, updated_by)
@@ -315,7 +364,7 @@ def set_param(key, value, user_id=None):
 # ── Admin: System Logs ────────────────────────────────
 
 def log_event(level, category, message, user_id=None, details=None):
-    now = datetime.now(timezone.utc).isoformat()
+    now = now_iso()
     conn = get_db()
     conn.execute("""
         INSERT INTO system_logs (timestamp, level, category, message, user_id, details)
@@ -343,6 +392,13 @@ def list_logs(level=None, category=None, limit=100, offset=0):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def clear_logs():
+    conn = get_db()
+    conn.execute("DELETE FROM system_logs")
+    conn.commit()
+    conn.close()
 
 
 def count_logs(level=None, category=None):

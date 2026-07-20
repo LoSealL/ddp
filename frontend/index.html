@@ -54,6 +54,7 @@
       <button class="btn-lang" id="theme-toggle">☀️</button>
       <button class="btn-lang" id="lang-toggle-app">中文</button>
       <span class="username"><span data-i18n="signedInAs">Signed in as</span> <strong id="nav-username">—</strong></span>
+      <button class="btn-logout" id="btn-passwd" data-i18n="changePassword">Password</button>
       <button class="btn-logout" id="btn-logout" data-i18n="logout">Logout</button>
     </div>
   </header>
@@ -99,6 +100,14 @@
           <label data-i18n="gpuMem">GPU Memory (MB, optional)</label>
           <input type="number" name="gpu_mem_mb" id="gpu_mem_mb" min="0" step="1024" placeholder="full share" />
           <div class="hint" data-i18n="gpuMemHint">Leave empty for a full-memory vGPU slice.</div>
+        </div>
+        <div class="field">
+          <label data-i18n="cpuCores">CPU Cores</label>
+          <input type="number" name="cpu" id="cpu" value="2" min="0.5" step="0.5" />
+        </div>
+        <div class="field">
+          <label data-i18n="memoryGb">Memory (GB)</label>
+          <input type="number" name="memory_gb" id="memory_gb" value="4" min="0.5" step="0.5" />
         </div>
         <button type="submit" class="btn-submit" id="submit-btn" data-i18n="scheduleJob">Schedule Job</button>
       </form>

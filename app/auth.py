@@ -22,7 +22,7 @@ def verify_password(password: str, stored_hash: str, salt: str) -> bool:
 
 def create_session_for_user(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
-    expires = (datetime.now(timezone.utc) + SESSION_DURATION).isoformat()
+    expires = (datetime.now(db.get_tz()) + SESSION_DURATION).isoformat()
     db.create_session(token, user_id, expires)
     return token
 

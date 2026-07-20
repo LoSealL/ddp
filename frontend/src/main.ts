@@ -22,6 +22,8 @@ interface Job {
   error: string | null;
   gpus: number;
   gpu_mem_mb: number | null;
+  cpu: number;
+  memory_gb: number;
   output_path: string;
   ssh_port: number | null;
   ssh_password: string | null;
@@ -63,6 +65,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     loginFailed: "Login failed", registerFailed: "Registration failed",
     signingIn: "Signing in...", creating: "Creating...",
     logout: "Logout", signedInAs: "Signed in as",
+    changePassword: "Password", currentPassword: "Current Password", newPassword: "New Password",
+    confirmPassword: "Confirm New Password", passwordMismatch: "Passwords do not match",
+    passwordChanged: "Password changed.",
     submitJob: "Submit Job", jobs: "Jobs",
     jobName: "Job Name", projectZip: "Project (zip)",
     dropzoneHint: "Click or drag a .zip here",
@@ -73,6 +78,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     scheduledStart: "Scheduled Start (local time)", scheduledStartHint: "Platform fires within ~30s of this time.",
     maxRuntime: "Max Runtime (minutes)", maxRuntimeHint: "Hard kill at this point. Outputs collected up to then.",
     gpus: "GPUs", gpusHint: "vGPU slices via HAMi. 0 = CPU only.",
+    cpuCores: "CPU Cores", memoryGb: "Memory (GB)",
+    cpuQuota: "CPU Quota", memQuota: "Memory Quota (GB)",
+    tzOffset: "Timezone Offset (hours)", cpuDefaultQuota: "Default CPU Quota", memDefaultQuota: "Default Memory (GB)",
     gpuMem: "GPU Memory (MB, optional)", gpuMemHint: "Leave empty for a full-memory vGPU slice.",
     scheduleJob: "Schedule Job", scheduling: "Scheduling...",
     error: "Error", unknown: "Unknown",
@@ -91,6 +99,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     downloadLogs: "Download Logs", downloadCode: "Download Code",
     failed: "Failed", files: "file(s)", min: "min",
     st_initializing: "initializing", dragToOrder: "Drag to reorder queue",
+    jobGone: "This job no longer exists.", clearLogs: "Clear", clearLogsConfirm: "Delete all system logs?",
     st_pending: "pending", st_running: "running", st_done: "done",
     st_failed: "failed", st_timeout: "timeout", st_cancelled: "cancelled",
     langLabel: "中文",
@@ -127,6 +136,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     loginFailed: "登录失败", registerFailed: "注册失败",
     signingIn: "登录中...", creating: "创建中...",
     logout: "登出", signedInAs: "当前用户",
+    changePassword: "修改密码", currentPassword: "当前密码", newPassword: "新密码",
+    confirmPassword: "确认新密码", passwordMismatch: "两次输入的密码不一致",
+    passwordChanged: "密码已修改。",
     submitJob: "提交作业", jobs: "作业列表",
     jobName: "作业名称", projectZip: "项目文件 (zip)",
     dropzoneHint: "点击或拖拽 .zip 文件到此处",
@@ -137,6 +149,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     scheduledStart: "计划启动时间 (本地)", scheduledStartHint: "平台在此时间后约 30 秒内触发。",
     maxRuntime: "最大运行时长 (分钟)", maxRuntimeHint: "超时强制终止，已生成的产物仍会收集。",
     gpus: "GPU 数量", gpusHint: "HAMi vGPU 切分。0 = 仅用 CPU。",
+    cpuCores: "CPU 核数", memoryGb: "内存 (GB)",
+    cpuQuota: "CPU 配额", memQuota: "内存配额 (GB)",
+    tzOffset: "时区偏移 (小时)", cpuDefaultQuota: "默认 CPU 配额", memDefaultQuota: "默认内存 (GB)",
     gpuMem: "GPU 显存 (MB，可选)", gpuMemHint: "留空表示整显存的 vGPU 切片。",
     scheduleJob: "调度作业", scheduling: "调度中...",
     error: "错误", unknown: "未知",
@@ -155,6 +170,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     downloadLogs: "下载日志", downloadCode: "下载代码",
     failed: "操作失败", files: "个文件", min: "分钟",
     st_initializing: "初始化中", dragToOrder: "拖拽调整执行顺序",
+    jobGone: "该作业已不存在。", clearLogs: "清空", clearLogsConfirm: "确定清空全部系统日志？",
     st_pending: "等待中", st_running: "运行中", st_done: "已完成",
     st_failed: "失败", st_timeout: "超时", st_cancelled: "已取消",
     langLabel: "EN",
@@ -238,6 +254,8 @@ let imageChoices: string[] = [];
 let windowStart = '00:00';
 let windowEnd = '23:59';
 let gpuDefault = 0;
+let cpuQuota = 8;
+let memQuota = 32;
 let gpuTimer: ReturnType<typeof setInterval> | null = null;
 let adminViewActive = false;
 let adminTab: 'users' | 'params' | 'logs' | 'monitor' = 'users';
@@ -313,7 +331,8 @@ async function checkAuth(): Promise<boolean> {
     const resp = await fetch('/api/auth/me');
     if (resp.ok) {
       const user: { id: number; username: string; is_admin: number; mode?: string; gpu_quota?: number; images?: string[];
-                    time_window_start?: string; time_window_end?: string; gpu_default_quota?: number } = await resp.json();
+                    time_window_start?: string; time_window_end?: string; gpu_default_quota?: number;
+                    cpu_quota?: number; mem_quota?: number } = await resp.json();
       isAdmin = !!user.is_admin;
       execMode = user.mode || 'mock';
       gpuQuota = user.gpu_quota ?? 0;
@@ -321,6 +340,8 @@ async function checkAuth(): Promise<boolean> {
       windowStart = user.time_window_start || windowStart;
       windowEnd = user.time_window_end || windowEnd;
       gpuDefault = user.gpu_default_quota ?? 0;
+      cpuQuota = user.cpu_quota ?? 8;
+      memQuota = user.mem_quota ?? 32;
       showAppView(user.username);
       return true;
     }
@@ -345,7 +366,12 @@ function showAppView(username: string): void {
   }
   const gpusInput = $<HTMLInputElement>('gpus');
   gpusInput.max = String(gpuQuota);
-  $('image-select').innerHTML = imageChoices.map(i => `<option value="${i}">${i}</option>`).join('');
+  $<HTMLInputElement>('cpu').max = String(cpuQuota);
+  $<HTMLInputElement>('memory_gb').max = String(memQuota);
+  const imgSel = $('image-select') as HTMLSelectElement;
+  imgSel.innerHTML = imageChoices.map(i => `<option value="${i}">${i}</option>`).join('');
+  const pt = imageChoices.find(i => i.includes('pytorch'));
+  if (pt) imgSel.value = pt;
   setDefaultTime();
   refreshJobs();
   refreshGpus();
@@ -401,7 +427,7 @@ async function renderAdminUsers(): Promise<void> {
     <table class="users-table">
       <thead><tr>
         <th>ID</th><th>${t('username')}</th><th>${t('isAdmin')}</th>
-        <th>${t('gpuQuota')}</th><th>${t('storageQuota')}</th>
+        <th>${t('gpuQuota')}</th><th>${t('cpuQuota')}</th><th>${t('memQuota')}</th><th>${t('storageQuota')}</th>
         <th>${t('created')}</th><th></th>
       </tr></thead>
       <tbody>
@@ -410,8 +436,10 @@ async function renderAdminUsers(): Promise<void> {
             <td>${u.id}</td>
             <td>${escapeHtml(u.username)}</td>
             <td><input type="checkbox" class="u-admin" ${u.is_admin ? 'checked' : ''} /></td>
-            <td><input type="number" class="u-gpu" value="${u.gpu_quota_override ?? ''}" placeholder="default" min="0" /></td>
-            <td><input type="number" class="u-storage" value="${u.storage_quota_override_gb ?? ''}" placeholder="default" min="0" step="0.5" /></td>
+            <td><input type="number" class="u-gpu" value="${u.gpu_quota_override ?? ''}" placeholder="default" min="0" style="width:70px" /></td>
+            <td><input type="number" class="u-cpu" value="${u.cpu_quota_override ?? ''}" placeholder="default" min="0" step="0.5" style="width:70px" /></td>
+            <td><input type="number" class="u-mem" value="${u.memory_quota_override_gb ?? ''}" placeholder="default" min="0" step="0.5" style="width:70px" /></td>
+            <td><input type="number" class="u-storage" value="${u.storage_quota_override_gb ?? ''}" placeholder="default" min="0" step="0.5" style="width:80px" /></td>
             <td>${u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</td>
             <td>
               <button class="btn-save" data-save-uid="${u.id}">${t('save')}</button>
@@ -473,6 +501,20 @@ async function renderAdminParams(): Promise<void> {
           <input type="number" name="storage_default_quota_gb" value="${p.storage_default_quota_gb}" min="0" step="0.5" />
         </div>
       </div>
+      <div class="field-row">
+        <div class="field">
+          <label>${t('cpuDefaultQuota')}</label>
+          <input type="number" name="cpu_default_quota" value="${p.cpu_default_quota}" min="1" />
+        </div>
+        <div class="field">
+          <label>${t('memDefaultQuota')}</label>
+          <input type="number" name="memory_default_quota_gb" value="${p.memory_default_quota_gb}" min="1" step="0.5" />
+        </div>
+      </div>
+      <div class="field">
+        <label>${t('tzOffset')}</label>
+        <input type="number" name="tz_offset_hours" value="${p.tz_offset_hours}" min="-12" max="14" style="width:120px" />
+      </div>
       <div class="field">
         <label>${t('gpuDevices')}</label>
         <table class="users-table" id="gpu-devices-table">
@@ -503,6 +545,7 @@ async function renderAdminLogs(): Promise<void> {
   const totalPages = Math.max(1, Math.ceil(data.total / LOGS_PER_PAGE));
   content.innerHTML = `
     <div class="logs-filters">
+      <button id="logs-clear" class="btn-delete-user">${t('clearLogs')}</button>
       <select id="logs-level-filter">
         <option value="">${t('allLevels')}</option>
         <option value="INFO" ${logsLevel === 'INFO' ? 'selected' : ''}>INFO</option>
@@ -538,6 +581,12 @@ async function renderAdminLogs(): Promise<void> {
       <button id="logs-next" ${data.logs.length < LOGS_PER_PAGE ? 'disabled' : ''}>${t('next')}</button>
     </div>`;
 
+  const clearBtn = document.getElementById('logs-clear') as HTMLButtonElement | null;
+  if (clearBtn) clearBtn.addEventListener('click', async () => {
+    if (!confirm(t('clearLogsConfirm'))) return;
+    const r = await fetch('/api/admin/logs', { method: 'DELETE' });
+    if (r.ok) { logsPage = 0; renderAdminLogs(); }
+  });
   const levelFilter = document.getElementById('logs-level-filter') as HTMLSelectElement | null;
   if (levelFilter) levelFilter.addEventListener('change', e => {
     logsLevel = (e.target as HTMLSelectElement).value; logsPage = 0; renderAdminLogs();
@@ -652,6 +701,8 @@ async function submitJob(e: SubmitEvent): Promise<void> {
     if (result.queued) alert(t('queued'));
     form.reset();
     setDefaultTime();
+    const pt = imageChoices.find(i => i.includes('pytorch'));
+    if (pt) ($('image-select') as HTMLSelectElement).value = pt;
     await refreshJobs();
   } finally {
     btn.disabled = false; btn.textContent = t('scheduleJob');
@@ -744,11 +795,12 @@ function renderJobs(): void {
             <span>⏰ ${scheduled}</span>
             ${j.started_at ? `<span>▶ ${started}</span>` : ''}
             ${j.gpus ? `<span>🎮 ${j.gpus} GPU${j.gpu_mem_mb ? ` · ${j.gpu_mem_mb}MB` : ''}</span>` : ''}
+            <span>⚙ ${j.cpu ?? '—'}C · ${j.memory_gb ?? '—'}G</span>
             ${j.output_count ? `<span>📦 ${j.output_count} ${t('files')}</span>` : ''}
           </div>
         </div>
         <span class="status status-${j.status}">${statusLabel(j.status)}</span>
-        ${j.status === 'running' || (isAdmin && j.status !== 'pending') ? '' : `<button class="btn-delete-card" data-delete-id="${j.id}" title="${t('deleteJob')}">✕</button>`}
+        ${j.status === 'running' || (isAdmin && j.status === 'initializing') ? '' : `<button class="btn-delete-card" data-delete-id="${j.id}" title="${t('deleteJob')}">✕</button>`}
       </div>`;
   }).join('');
 }
@@ -767,9 +819,14 @@ async function openModal(jobId: string): Promise<void> {
     fetch(`${API}/${jobId}/logs`),
     fetch(`${API}/${jobId}/outputs`),
   ]);
+  if (!jobResp.ok) {
+    title.textContent = t('jobDetail');
+    body.innerHTML = `<div class="empty">${t('jobGone')}</div>`;
+    return;
+  }
   const job: Job = await jobResp.json();
-  const logs: string = (await logResp.json()).logs;
-  const outputs: Output[] = (await outResp.json()).outputs;
+  const logs: string = logResp.ok ? (await logResp.json()).logs : '';
+  const outputs: Output[] = outResp.ok ? (await outResp.json()).outputs : [];
 
   title.textContent = job.name;
 
@@ -781,6 +838,7 @@ async function openModal(jobId: string): Promise<void> {
         <div class="kv"><span class="k">${t('entryCmd')}</span><span class="v"><code>${escapeHtml(job.entry_command || '—')}</code></span></div>
         <div class="kv"><span class="k">${t('maxRuntimeLabel')}</span><span class="v">${job.timeout_minutes || '—'} ${t('min')}</span></div>
         <div class="kv"><span class="k">${t('gpus')}</span><span class="v">${job.gpus ? `${job.gpus}${job.gpu_mem_mb ? ` · ${job.gpu_mem_mb} MB` : ''}` : '0 (CPU)'}</span></div>
+        <div class="kv"><span class="k">CPU / ${t('memoryGb')}</span><span class="v">${job.cpu ?? '—'} / ${job.memory_gb ?? '—'} GB</span></div>
         <div class="kv"><span class="k">${t('scheduledUtc')}</span><span class="v">${job.scheduled_at ? new Date(job.scheduled_at).toLocaleString() : '—'}</span></div>
         <div class="kv"><span class="k">${t('started')}</span><span class="v">${job.started_at ? new Date(job.started_at).toLocaleString() : '—'}</span></div>
         <div class="kv"><span class="k">${t('finished')}</span><span class="v">${job.finished_at ? new Date(job.finished_at).toLocaleString() : '—'}</span></div>
@@ -823,6 +881,30 @@ async function openModal(jobId: string): Promise<void> {
   body.innerHTML = html;
 }
 
+// ── Change password ──────────────────────────
+function showPasswordForm(): void {
+  $('modal-title').textContent = t('changePassword');
+  $('modal-body').innerHTML = `
+    <form id="passwd-form">
+      <div class="field"><label>${t('currentPassword')}</label><input type="password" name="old_password" required autocomplete="current-password" /></div>
+      <div class="field"><label>${t('newPassword')}</label><input type="password" name="new_password" required minlength="6" autocomplete="new-password" /></div>
+      <div class="field"><label>${t('confirmPassword')}</label><input type="password" name="confirm_password" required minlength="6" autocomplete="new-password" /></div>
+      <button type="submit" class="btn-submit">${t('save')}</button>
+    </form>`;
+  $('modal').classList.add('open');
+}
+
+async function savePassword(e: SubmitEvent): Promise<void> {
+  e.preventDefault();
+  const form = e.target as HTMLFormElement;
+  const fd = new FormData(form);
+  if (fd.get('new_password') !== fd.get('confirm_password')) { alert(t('passwordMismatch')); return; }
+  fd.delete('confirm_password');
+  const resp = await fetch('/api/auth/password', { method: 'POST', body: fd });
+  if (resp.ok) { closeModal(); alert(t('passwordChanged')); }
+  else { const err = await resp.json().catch(() => ({} as Record<string, string>)); alert(err.detail || t('failed')); }
+}
+
 // ── Edit pending job ─────────────────────────
 function toLocalInput(iso: string): string {
   const d = new Date(iso);
@@ -841,6 +923,8 @@ function showEditForm(jobId: string): void {
       <div class="field"><label>${t('maxRuntime')}</label><input type="number" name="timeout_minutes" value="${job.timeout_minutes}" min="1" max="1440" /></div>
       <div class="field"><label>${t('outputPath')}</label><input name="output_path" value="${escapeHtml(job.output_path || 'output')}" /></div>
       <div class="field"><label>${t('gpus')}</label><input type="number" name="gpus" value="${job.gpus}" min="0" max="${gpuQuota}" /></div>
+      <div class="field"><label>${t('cpuCores')}</label><input type="number" name="cpu" value="${job.cpu ?? 2}" min="0.5" step="0.5" max="${cpuQuota}" /></div>
+      <div class="field"><label>${t('memoryGb')}</label><input type="number" name="memory_gb" value="${job.memory_gb ?? 4}" min="0.5" step="0.5" max="${memQuota}" /></div>
       <div class="field"><label>${t('gpuMem')}</label><input type="number" name="gpu_mem_mb" value="${job.gpu_mem_mb ?? ''}" min="0" step="1024" /></div>
       <button type="submit" class="btn-submit">${t('save')}</button>
     </form>`;
@@ -957,6 +1041,7 @@ document.addEventListener('DOMContentLoaded', () => {
   $('lang-toggle-auth').addEventListener('click', toggleLang);
   $('lang-toggle-app').addEventListener('click', toggleLang);
   $('btn-logout').addEventListener('click', doLogout);
+  $('btn-passwd').addEventListener('click', showPasswordForm);
   $('job-form').addEventListener('submit', submitJob);
   $('gpus').addEventListener('input', () => {
     $('gpu-mem-field').style.display = parseInt($<HTMLInputElement>('gpus').value) > 0 ? '' : 'none';
@@ -1023,6 +1108,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('modal-body').addEventListener('submit', e => {
     if ((e.target as HTMLFormElement).id === 'edit-form') saveEdit(e as SubmitEvent);
+    if ((e.target as HTMLFormElement).id === 'passwd-form') savePassword(e as SubmitEvent);
   });
 
   // Admin panel handlers
@@ -1043,6 +1129,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const storageVal = (row.querySelector('.u-storage') as HTMLInputElement).value;
       const body: any = { is_admin: isAdm };
       body.gpu_quota_override = gpuVal === '' ? null : parseInt(gpuVal);
+      const cpuVal = (row.querySelector('.u-cpu') as HTMLInputElement).value;
+      const memVal = (row.querySelector('.u-mem') as HTMLInputElement).value;
+      body.cpu_quota_override = cpuVal === '' ? null : parseFloat(cpuVal);
+      body.memory_quota_override_gb = memVal === '' ? null : parseFloat(memVal);
       body.storage_quota_override_gb = storageVal === '' ? null : parseFloat(storageVal);
       const r = await fetch(`/api/admin/users/${uid}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -1071,6 +1161,9 @@ document.addEventListener('DOMContentLoaded', () => {
     body.time_window_repeat = fd.get('time_window_repeat');
     body.gpu_default_quota = parseInt(fd.get('gpu_default_quota') as string);
     body.storage_default_quota_gb = parseFloat(fd.get('storage_default_quota_gb') as string);
+    body.cpu_default_quota = parseInt(fd.get('cpu_default_quota') as string);
+    body.memory_default_quota_gb = parseFloat(fd.get('memory_default_quota_gb') as string);
+    body.tz_offset_hours = parseInt(fd.get('tz_offset_hours') as string);
     // Collect GPU devices from table rows
     const gpuRows = document.querySelectorAll('#gpu-devices-body .gpu-device-row');
     body.gpu_devices = Array.from(gpuRows).map(row => {

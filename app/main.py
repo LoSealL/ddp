@@ -1,7 +1,7 @@
 import asyncio
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -28,7 +28,7 @@ if EXECUTOR_MODE == "k8s":
     executor = K8sExecutor(storage)
 else:
     executor = MockExecutor(storage)
-scheduler = AsyncIOScheduler(timezone="UTC")
+scheduler = AsyncIOScheduler(timezone=db.get_tz())
 
 
 @asynccontextmanager
@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     # Reschedule pending jobs after restart
     for job in db.list_jobs():
         if job["status"] in ("pending", "initializing"):
-            dt = datetime.fromisoformat(job["scheduled_at"])
+            dt = _not_in_past(datetime.fromisoformat(job["scheduled_at"]))
             trigger = DateTrigger(run_date=dt)
             scheduler.add_job(
                 executor.execute, trigger, args=[job["id"]], id=job["id"],
@@ -117,6 +117,20 @@ async def logout(session: str | None = Cookie(None)):
     return resp
 
 
+@app.post("/api/auth/password")
+async def change_password(user: dict = Depends(auth.get_current_user),
+                          old_password: str = Form(...), new_password: str = Form(...)):
+    full = db.get_user_by_id(user["id"])
+    if not full or not auth.verify_password(old_password, full["password_hash"], full["salt"]):
+        raise HTTPException(403, "Current password is incorrect")
+    if len(new_password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    pw_hash, salt = auth.hash_password(new_password)
+    db.update_user_password(user["id"], pw_hash, salt)
+    db.log_event("INFO", "auth", f"Password changed: {user['username']}", user_id=user["id"])
+    return {"ok": True}
+
+
 @app.get("/api/auth/me")
 async def me(user: dict = Depends(auth.get_current_user)):
     full = db.get_user_by_id(user["id"]) or {}
@@ -128,11 +142,18 @@ async def me(user: dict = Depends(auth.get_current_user)):
     except Exception:
         image_list = []
     params = db.get_all_params()
+    cpu_quota = full.get("cpu_quota_override")
+    if cpu_quota is None:
+        cpu_quota = params.get("cpu_default_quota", 8)
+    mem_quota = full.get("memory_quota_override_gb")
+    if mem_quota is None:
+        mem_quota = params.get("memory_default_quota_gb", 32)
     return {"id": user["id"], "username": user["username"], "is_admin": user.get("is_admin", 0),
             "mode": EXECUTOR_MODE, "gpu_quota": quota, "images": image_list,
             "time_window_start": params.get("time_window_start", "00:00"),
             "time_window_end": params.get("time_window_end", "23:59"),
-            "gpu_default_quota": params.get("gpu_default_quota", 0)}
+            "gpu_default_quota": params.get("gpu_default_quota", 0),
+            "cpu_quota": cpu_quota, "mem_quota": mem_quota}
 
 
 @app.get("/api/gpus")
@@ -146,6 +167,12 @@ async def list_gpus(user: dict = Depends(auth.get_current_user)):
     for g in gpus:
         g["enabled"] = g["uuid"] not in disabled
     return {"gpus": gpus}
+
+
+def _not_in_past(dt: datetime) -> datetime:
+    """APScheduler silently drops triggers set in the past — clamp to now+1min."""
+    now = datetime.now(db.get_tz())
+    return dt if dt > now else now + timedelta(minutes=1)
 
 
 def _validate_output_path(p: str) -> str:
@@ -168,9 +195,13 @@ async def create_job(
     timeout_minutes: int = Form(60),
     gpus: int = Form(0),
     gpu_mem_mb: int | None = Form(None),
+    cpu: float = Form(2),
+    memory_gb: float = Form(4),
     output_path: str = Form("output"),
 ):
     output_path = _validate_output_path(output_path)
+    if cpu <= 0 or memory_gb <= 0:
+        raise HTTPException(400, "cpu and memory_gb must be positive")
     try:
         known = images.list_images()
     except Exception:
@@ -185,6 +216,16 @@ async def create_job(
         quota = db.get_param("gpu_default_quota") or 0
     if gpus > quota:
         raise HTTPException(403, f"GPU quota exceeded: requested {gpus}, allowed {quota}")
+    cpu_cap = full_user.get("cpu_quota_override")
+    if cpu_cap is None:
+        cpu_cap = db.get_param("cpu_default_quota") or 8
+    if cpu > cpu_cap:
+        raise HTTPException(403, f"CPU quota exceeded: requested {cpu}, allowed {cpu_cap}")
+    mem_cap = full_user.get("memory_quota_override_gb")
+    if mem_cap is None:
+        mem_cap = db.get_param("memory_default_quota_gb") or 32
+    if memory_gb > mem_cap:
+        raise HTTPException(403, f"Memory quota exceeded: requested {memory_gb}GB, allowed {mem_cap}GB")
     storage_quota = full_user.get("storage_quota_override_gb")
     if storage_quota is None:
         storage_quota = db.get_param("storage_default_quota_gb") or 10
@@ -199,8 +240,8 @@ async def create_job(
         adjusted_dt = timecheck.check_scheduled_time(local_dt)
     was_queued = adjusted_dt != local_dt
 
-    dt_utc = adjusted_dt.astimezone(timezone.utc)
-    scheduled_utc = dt_utc.isoformat()
+    dt_local = _not_in_past(adjusted_dt.replace(tzinfo=db.get_tz()))
+    scheduled_utc = dt_local.isoformat()
 
     ssh_info = {}
     if hasattr(executor, "prepare"):
@@ -217,7 +258,7 @@ async def create_job(
                   timeout_minutes, gpus=gpus, gpu_mem_mb=gpu_mem_mb if gpus else None,
                   ssh_port=ssh_info.get("ssh_port"), ssh_password=ssh_info.get("ssh_password"),
                   status="initializing" if initializing else "pending",
-                  output_path=output_path)
+                  output_path=output_path, cpu=cpu, memory_gb=memory_gb)
     if initializing:
         asyncio.create_task(executor.wait_ready(job_id))
 
@@ -227,7 +268,7 @@ async def create_job(
                      user_id=user["id"])
 
     scheduler.add_job(
-        executor.execute, DateTrigger(run_date=dt_utc),
+        executor.execute, DateTrigger(run_date=dt_local),
         args=[job_id], id=job_id, replace_existing=True,
     )
 
@@ -243,7 +284,7 @@ async def list_jobs(user: dict = Depends(auth.get_current_user)):
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str, user: dict = Depends(auth.get_current_user)):
     job = db.get_job(job_id)
-    if not job or job.get("user_id") != user["id"]:
+    if not job or (job.get("user_id") != user["id"] and not user.get("is_admin")):
         raise HTTPException(404)
     return job
 
@@ -251,7 +292,7 @@ async def get_job(job_id: str, user: dict = Depends(auth.get_current_user)):
 @app.get("/api/jobs/{job_id}/logs")
 async def get_logs(job_id: str, user: dict = Depends(auth.get_current_user)):
     job = db.get_job(job_id)
-    if not job or job.get("user_id") != user["id"]:
+    if not job or (job.get("user_id") != user["id"] and not user.get("is_admin")):
         raise HTTPException(404)
     try:
         data = storage.get_object_bytes(f"jobs/{job_id}/logs/run.log")
@@ -263,7 +304,7 @@ async def get_logs(job_id: str, user: dict = Depends(auth.get_current_user)):
 @app.get("/api/jobs/{job_id}/logs/download")
 async def download_logs(job_id: str, user: dict = Depends(auth.get_current_user)):
     job = db.get_job(job_id)
-    if not job or job.get("user_id") != user["id"]:
+    if not job or (job.get("user_id") != user["id"] and not user.get("is_admin")):
         raise HTTPException(404)
     try:
         data = storage.get_object_bytes(f"jobs/{job_id}/logs/run.log")
@@ -280,7 +321,7 @@ async def download_logs(job_id: str, user: dict = Depends(auth.get_current_user)
 @app.get("/api/jobs/{job_id}/outputs")
 async def get_outputs(job_id: str, user: dict = Depends(auth.get_current_user)):
     job = db.get_job(job_id)
-    if not job or job.get("user_id") != user["id"]:
+    if not job or (job.get("user_id") != user["id"] and not user.get("is_admin")):
         raise HTTPException(404)
     objects = storage.list_objects(storage.bucket, f"jobs/{job_id}/output/")
     for o in objects:
@@ -292,7 +333,7 @@ async def get_outputs(job_id: str, user: dict = Depends(auth.get_current_user)):
 @app.get("/api/jobs/{job_id}/download/{file_path:path}")
 async def download_file(job_id: str, file_path: str, user: dict = Depends(auth.get_current_user)):
     job = db.get_job(job_id)
-    if not job or job.get("user_id") != user["id"]:
+    if not job or (job.get("user_id") != user["id"] and not user.get("is_admin")):
         raise HTTPException(404)
     key = f"jobs/{job_id}/{file_path}"
     if not storage.object_exists(key):
@@ -310,20 +351,22 @@ async def update_pending_job(job_id: str, user: dict = Depends(auth.get_current_
                              name: str = Form(None), entry_command: str = Form(None),
                              scheduled_at: str = Form(None), timeout_minutes: int = Form(None),
                              gpus: int = Form(None), gpu_mem_mb: int | None = Form(None),
+                             cpu: float = Form(None), memory_gb: float = Form(None),
                              output_path: str = Form(None)):
     job = db.get_job(job_id)
-    if not job or job.get("user_id") != user["id"]:
+    if not job or (job.get("user_id") != user["id"] and not user.get("is_admin")):
         raise HTTPException(404)
     if job["status"] != "pending":
         raise HTTPException(409, "Only pending jobs can be edited")
     return _apply_job_edits(job, user, name, entry_command, scheduled_at,
-                            timeout_minutes, gpus, gpu_mem_mb, output_path)
+                            timeout_minutes, gpus, gpu_mem_mb, output_path,
+                            cpu=cpu, memory_gb=memory_gb)
 
 
 @app.delete("/api/jobs/{job_id}")
 async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
     job = db.get_job(job_id)
-    if not job or job.get("user_id") != user["id"]:
+    if not job or (job.get("user_id") != user["id"] and not user.get("is_admin")):
         raise HTTPException(404)
     if job["status"] in ("pending", "initializing"):
         try:
@@ -338,7 +381,7 @@ async def cancel_job(job_id: str, user: dict = Depends(auth.get_current_user)):
         if hasattr(executor, "cancel"):
             await executor.cancel(job_id)
             db.update_job(job_id, status="cancelled",
-                          finished_at=datetime.now(timezone.utc).isoformat())
+                          finished_at=db.now_iso())
             db.log_event("INFO", "job", f"Running job cancelled: {job_id}", user_id=user["id"])
         else:
             raise HTTPException(409, "Cannot cancel a running job in mock mode")
@@ -366,8 +409,27 @@ async def admin_list_jobs(user: dict = Depends(auth.require_admin)):
 
 
 def _apply_job_edits(job, user, name, entry_command, scheduled_at,
-                     timeout_minutes, gpus, gpu_mem_mb, output_path):
+                     timeout_minutes, gpus, gpu_mem_mb, output_path,
+                     cpu=None, memory_gb=None):
     updates = {}
+    if (cpu is not None and cpu <= 0) or (memory_gb is not None and memory_gb <= 0):
+        raise HTTPException(400, "cpu and memory_gb must be positive")
+    if cpu is not None or memory_gb is not None:
+        owner = db.get_user_by_id(job["user_id"]) or {}
+        if cpu is not None:
+            cap = owner.get("cpu_quota_override")
+            if cap is None:
+                cap = db.get_param("cpu_default_quota") or 8
+            if cpu > cap:
+                raise HTTPException(403, f"CPU quota exceeded: requested {cpu}, allowed {cap}")
+            updates["cpu"] = cpu
+        if memory_gb is not None:
+            cap = owner.get("memory_quota_override_gb")
+            if cap is None:
+                cap = db.get_param("memory_default_quota_gb") or 32
+            if memory_gb > cap:
+                raise HTTPException(403, f"Memory quota exceeded: requested {memory_gb}GB, allowed {cap}GB")
+            updates["memory_gb"] = memory_gb
     if name is not None and name.strip():
         updates["name"] = name.strip()
     if entry_command is not None and entry_command.strip():
@@ -393,10 +455,10 @@ def _apply_job_edits(job, user, name, entry_command, scheduled_at,
         local_dt = datetime.fromisoformat(scheduled_at)
         if not user.get("is_admin"):
             local_dt = timecheck.check_scheduled_time(local_dt)
-        dt_utc = local_dt.astimezone(timezone.utc)
-        updates["scheduled_at"] = dt_utc.isoformat()
+        dt_local = _not_in_past(local_dt.replace(tzinfo=db.get_tz()))
+        updates["scheduled_at"] = dt_local.isoformat()
         scheduler.add_job(
-            executor.execute, DateTrigger(run_date=dt_utc),
+            executor.execute, DateTrigger(run_date=dt_local),
             args=[job["id"]], id=job["id"], replace_existing=True,
         )
     if output_path is not None:
@@ -413,6 +475,7 @@ async def admin_update_job(job_id: str, user: dict = Depends(auth.require_admin)
                            name: str = Form(None), entry_command: str = Form(None),
                            scheduled_at: str = Form(None), timeout_minutes: int = Form(None),
                            gpus: int = Form(None), gpu_mem_mb: int | None = Form(None),
+                           cpu: float = Form(None), memory_gb: float = Form(None),
                            output_path: str = Form(None)):
     job = db.get_job(job_id)
     if not job:
@@ -420,7 +483,8 @@ async def admin_update_job(job_id: str, user: dict = Depends(auth.require_admin)
     if job["status"] != "pending":
         raise HTTPException(409, "Only pending jobs can be edited")
     return _apply_job_edits(job, user, name, entry_command, scheduled_at,
-                            timeout_minutes, gpus, gpu_mem_mb, output_path)
+                            timeout_minutes, gpus, gpu_mem_mb, output_path,
+                            cpu=cpu, memory_gb=memory_gb)
 
 
 @app.delete("/api/admin/jobs/{job_id}")
@@ -428,16 +492,23 @@ async def admin_delete_job(job_id: str, user: dict = Depends(auth.require_admin)
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(404)
-    if job["status"] != "pending":
-        raise HTTPException(409, "Only pending jobs can be deleted by admin")
-    try:
-        scheduler.remove_job(job_id)
-    except Exception:
-        pass
-    if hasattr(executor, "cleanup"):
-        await executor.cleanup(job_id)
-    db.update_job(job_id, status="cancelled")
-    db.log_event("INFO", "admin", f"Job cancelled by admin: {job_id}", user_id=user["id"])
+    if job["status"] in ("running", "initializing"):
+        raise HTTPException(409, f"Cannot delete a {job['status']} job")
+    if job["status"] == "pending":
+        try:
+            scheduler.remove_job(job_id)
+        except Exception:
+            pass
+        if hasattr(executor, "cleanup"):
+            await executor.cleanup(job_id)
+        db.update_job(job_id, status="cancelled")
+        db.log_event("INFO", "admin", f"Job cancelled by admin: {job_id}", user_id=user["id"])
+    else:
+        storage.delete_prefix(f"jobs/{job_id}/")
+        if hasattr(executor, "cleanup"):
+            await executor.cleanup(job_id)
+        db.delete_job(job_id)
+        db.log_event("INFO", "admin", f"Job deleted by admin: {job_id}", user_id=user["id"])
     return {"ok": True}
 
 
@@ -456,8 +527,7 @@ async def admin_reorder_jobs(body: dict, user: dict = Depends(auth.require_admin
         if job["status"] != "pending":
             raise HTTPException(409, f"Job {jid} is not pending")
         jobs.append(job)
-    base = min(datetime.fromisoformat(j["scheduled_at"]) for j in jobs)
-    from datetime import timedelta
+    base = _not_in_past(min(datetime.fromisoformat(j["scheduled_at"]) for j in jobs))
     for i, job in enumerate(jobs):
         dt = base + timedelta(minutes=i)
         db.update_job(job["id"], scheduled_at=dt.isoformat())

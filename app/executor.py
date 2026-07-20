@@ -23,10 +23,10 @@ class MockExecutor:
         if not job:
             return
         db.update_job(job_id, status="running",
-                      started_at=datetime.now(timezone.utc).isoformat())
+                      started_at=db.now_iso())
         await asyncio.sleep(0.1)
         self.storage.upload_bytes(f"jobs/{job_id}/logs/run.log",
                                   f"mock run: {job['entry_command']}\n".encode())
         db.update_job(job_id, status="done",
-                      finished_at=datetime.now(timezone.utc).isoformat(),
+                      finished_at=db.now_iso(),
                       output_count=0, s3_prefix=f"ddp/jobs/{job_id}/")

@@ -1,376 +1,135 @@
 ---
 name: ddp-backend
-description: Use when integrating with or calling the DDP (Delayed Dispatch Platform) backend API — submitting Python jobs, checking job status, fetching logs/outputs, or implementing auth flows. Covers all REST endpoints, session cookie auth, multipart upload, and the mock S3/executor swap path.
+description: Use when integrating with or calling the DDP (Delayed Dispatch Platform) backend API — submitting GPU jobs with ssh debug pods, editing pending jobs, checking status, fetching logs/outputs, admin cross-user management, or implementing auth flows. Covers all REST endpoints, session cookie auth, and the mock/k8s executor modes.
 ---
 
 # DDP Backend Integration
 
-## Overview
+DDP is a FastAPI service that schedules GPU jobs on k8s. On submit the user immediately gets a cpu-only **ssh debug pod** (same image + persistent per-user workspace); at the scheduled time a GPU Job runs the entry command in that same workspace; outputs are harvested to S3.
 
-DDP is a FastAPI service that accepts zipped Python projects, schedules them for one-shot delayed execution, collects output artifacts to S3, and guarantees resource cleanup. This skill documents every API endpoint, the auth model, and how to swap mock components for production.
-
-**Base URL:** `http://localhost:8000` (configurable via uvicorn `--host`/`--port`)
-
-## When to Use
-
-- Building a frontend, CLI, or SDK that calls the DDP API
-- Writing integration tests against the backend
-- Replacing mock executor/storage with K8s/AWS S3
-- Debugging 401/422/409 errors from the API
+**Base URL:** `http://172.16.50.3:8888` (k8s) or `http://localhost:8000` (local dev)
 
 ## Auth Model
 
-All `/api/jobs/*` endpoints require a valid session cookie. Auth uses server-side sessions (SQLite), not JWT.
-
-### Flow
-
-1. `POST /api/auth/register` or `POST /api/auth/login` with `multipart/form-data` (`username`, `password`)
-2. Server responds with `Set-Cookie: session=<token>; HttpOnly; SameSite=Lax` (7-day expiry)
-3. Include this cookie in all subsequent requests
-4. `POST /api/auth/logout` invalidates the session server-side
-
-### Constraints
-
-- Username: min 2 chars
-- Password: min 6 chars
-- Duplicate username → HTTP 409
-- Wrong password → HTTP 401
-- Missing/expired cookie → HTTP 401 on protected routes
-
-### Auth Endpoints
+Server-side sessions (SQLite), HttpOnly cookie `session`, 7-day expiry. All job endpoints require it.
 
 | Method | Path | Body (form-data) | Response |
 |--------|------|-------------------|----------|
-| POST | `/api/auth/register` | `username`, `password` | `{"ok":true,"username":"..."}` + Set-Cookie |
+| POST | `/api/auth/register` | `username` (≥2), `password` (≥6) | `{"ok":true,"username"}` + Set-Cookie. First user = admin |
 | POST | `/api/auth/login` | `username`, `password` | `{"ok":true}` + Set-Cookie |
-| POST | `/api/auth/logout` | — (cookie required) | `{"ok":true}` + clears cookie |
-| GET | `/api/auth/me` | — (cookie required) | `{"id":1,"username":"..."}` |
+| POST | `/api/auth/logout` | — | clears session |
+| POST | `/api/auth/password` | `old_password`, `new_password` (≥6) | `{"ok":true}`; 403 wrong old password |
+| GET | `/api/auth/me` | — | see below |
 
-## Job API
+`GET /api/auth/me` response:
 
-All job endpoints require the session cookie. Jobs are scoped per-user — you only see/modify your own jobs.
+```json
+{
+  "id": 1, "username": "alice", "is_admin": 1,
+  "mode": "k8s", "gpu_quota": 8,
+  "images": ["ddp-cuda-ssh:latest", "ddp-pytorch-ssh:latest"],
+  "time_window_start": "22:00", "time_window_end": "06:00",
+  "gpu_default_quota": 1
+}
+```
 
-### Submit Job
+## Submit Job
 
 ```
 POST /api/jobs
 Content-Type: multipart/form-data
-Cookie: session=<token>
 ```
 
-| Field | Type | Required | Default | Notes |
-|-------|------|----------|---------|-------|
-| `file` | File (.zip) | Yes | — | Must end with `.zip` |
-| `name` | String | Yes | — | Human-readable job name |
-| `entry_command` | String | No | `python main.py` | Shell command run in project root |
-| `scheduled_at` | String | Yes | — | `datetime-local` format: `YYYY-MM-DDTHH:MM` (interpreted as local time, converted to UTC server-side) |
-| `timeout_minutes` | Integer | No | `60` | Hard kill limit. 1–1440. |
+| Field | Required | Default | Notes |
+|-------|----------|---------|-------|
+| `name` | Yes | — | |
+| `image` | Yes | — | Must be one of `/api/auth/me` → `images` (Harbor tags) |
+| `entry_command` | No | `python main.py` | Runs in `/workspace` of the GPU pod |
+| `scheduled_at` | Yes | — | `YYYY-MM-DDTHH:MM` local time; non-admins are queued to the next allowed window |
+| `timeout_minutes` | No | `60` | 1–1440, hard kill via `activeDeadlineSeconds` |
+| `gpus` | No | `0` | vGPU count, 403 above user quota |
+| `gpu_mem_mb` | No | — | vGPU memory (HAMi `gpumem`) |
+| `output_path` | No | `output` | Absolute or `/workspace`-relative; must resolve inside `/workspace`. **Harvested**: uploaded to S3 then deleted from workspace |
 
-**Response:** `{"id":"<uuid>","status":"pending"}`
-
-**Errors:**
-- 401: Not authenticated
-- 400: File is not a .zip
-
-### List Jobs
-
-```
-GET /api/jobs
-Cookie: session=<token>
-```
-
-**Response:** Array of job objects (newest first), scoped to current user.
+**Response** (k8s mode):
 
 ```json
-[
-  {
-    "id": "uuid",
-    "name": "nightly ETL",
-    "filename": "project.zip",
-    "entry_command": "python main.py",
-    "scheduled_at": "2026-07-13T15:22:00+00:00",
-    "timeout_minutes": 60,
-    "status": "done",
-    "created_at": "2026-07-13T15:21:48+00:00",
-    "started_at": "2026-07-13T15:22:00+00:00",
-    "finished_at": "2026-07-13T15:22:01+00:00",
-    "s3_prefix": "ddp/jobs/<uuid>/",
-    "output_count": 2,
-    "error": null,
-    "user_id": 1
-  }
-]
+{"id": "<uuid>", "status": "initializing", "queued": false,
+ "ssh_port": 30439, "ssh_password": "..."}
 ```
 
-### Get Job Detail
+SSH: `ssh root@<any-node-ip> -p <ssh_port>` with the given password. The debug pod has **no GPU** (`nvidia-smi` → "No devices were found") and proxy env pre-set. `/workspace` (also at `~/workspace`) persists across all of the user's jobs.
 
-```
-GET /api/jobs/{job_id}
-Cookie: session=<token>
-```
-
-Returns the job object (same shape as list item). 404 if not found or not owned by current user.
-
-### Get Job Logs
-
-```
-GET /api/jobs/{job_id}/logs
-Cookie: session=<token>
-```
-
-**Response:** `{"logs": "...full stdout+stderr..."}`
-
-Logs include pip install output (if `requirements.txt` exists) and the entry command output. Empty string if job hasn't run yet.
-
-### Get Job Outputs
-
-```
-GET /api/jobs/{job_id}/outputs
-Cookie: session=<token>
-```
-
-**Response:**
-```json
-{
-  "outputs": [
-    {
-      "key": "jobs/<uuid>/output/result.txt",
-      "size": 65,
-      "s3_uri": "s3://ddp/jobs/<uuid>/output/result.txt"
-    }
-  ]
-}
-```
-
-Download artifacts via the static mount: `GET /s3/{key}` (no auth required in mock mode).
-
-### Cancel / Delete Job
-
-```
-DELETE /api/jobs/{job_id}
-Cookie: session=<token>
-```
-
-Behavior depends on job status:
-
-| Status | Action | Result |
-|--------|--------|--------|
-| `pending` | Cancels scheduled trigger, marks `cancelled` | `{"ok":true}` |
-| `running` | Rejected | HTTP 409 |
-| `done`/`failed`/`timeout`/`cancelled` | Deletes from DB | `{"ok":true}` |
+**Errors:** 400 unknown image / bad output_path; 403 GPU quota exceeded; 502 debug env creation failed.
 
 ## Job Lifecycle
 
 ```
-pending → running → done
-                 → failed
-                 → timeout
-         → cancelled (via DELETE while pending)
+initializing → pending → running → done / failed / timeout
+                   ↘ cancelled
 ```
 
-| Status | Meaning |
-|--------|---------|
-| `pending` | Scheduled, waiting for trigger time |
-| `running` | Executor has started, process is alive |
-| `done` | Process exited 0, outputs collected |
-| `failed` | Process exited non-zero, or exception occurred |
-| `timeout` | Process killed after `timeout_minutes` |
-| `cancelled` | User cancelled before execution started |
+- `initializing`: debug pod starting (image pull, sshd). Flips to `pending` when ssh is connectable (~10 min cap → `failed`)
+- `pending`: waiting for `scheduled_at`. **Editable** and cancellable
+- `running`: GPU Job active. Cancellable (k8s mode)
+- `timeout`: killed by `activeDeadlineSeconds`
 
-## Submitted Project Format
+## Job Endpoints (user-scoped)
 
-```
-my-project.zip
-├── main.py              Entry script (default: python main.py)
-├── requirements.txt     Optional, auto pip install before entry command
-├── output/              Optional, all files auto-uploaded to S3
-└── manifest.json        Optional, declares additional output paths
-```
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/api/jobs` | Own jobs, newest first |
+| GET | `/api/jobs/{id}` | Detail (404 if not owner) |
+| PATCH | `/api/jobs/{id}` | **pending only** (else 409). Form fields, all optional: `name`, `entry_command`, `scheduled_at`, `timeout_minutes`, `gpus`, `gpu_mem_mb`, `output_path`. Reschedules the trigger |
+| DELETE | `/api/jobs/{id}` | pending/initializing → cancel; running → kill k8s Job (mock: 409); terminal → delete record + S3 prefix |
+| GET | `/api/jobs/{id}/logs` | `{"logs": "..."}` (may contain ANSI codes) |
+| GET | `/api/jobs/{id}/logs/download` | text file download |
+| GET | `/api/jobs/{id}/outputs` | `{"outputs":[{key,size,s3_uri,download_url}]}` |
+| GET | `/api/jobs/{id}/download/{path}` | artifact download |
+| GET | `/api/gpus` | `{"gpus":[{uuid,node,index,type,mem_total,mem_used,cores_total,cores_used,shared,enabled}]}` — HAMi allocation (bytes) |
 
-### manifest.json
+## Admin Endpoints (require_admin)
 
-```json
-{
-  "outputs": ["report.pdf", "data/final.csv"]
-}
-```
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/api/admin/jobs` | All users' jobs, each with `username` |
+| PATCH | `/api/admin/jobs/{id}` | pending only; quota checked against the job's **owner** |
+| DELETE | `/api/admin/jobs/{id}` | pending only → cancel (else 409) |
+| POST | `/api/admin/jobs/reorder` | `{"ids":[...]}` — rewrites pending `scheduled_at` in 1-min steps from earliest |
+| GET | `/api/admin/users` | List users |
+| PATCH | `/api/admin/users/{id}` | `{is_admin, gpu_quota_override, storage_quota_override_gb}`; can't demote/delete self or last admin |
+| DELETE | `/api/admin/users/{id}` | Also drops the user's workspace PVC |
+| GET/PUT | `/api/admin/params` | `time_window_*`, `gpu_default_quota`, `storage_default_quota_gb`, `gpu_devices` ([{uuid,enabled}], display-only disable) |
+| GET | `/api/admin/logs` | `?level&category&limit&offset` |
+| GET | `/api/admin/monitoring` | Job counts + real GPU + S3 usage |
 
-Paths are relative to project root. Both `output/` dir and manifest paths are collected (deduplication not performed — if a file appears in both, it uploads twice).
-
-### Zip structure handling
-
-If the zip contains a single top-level directory, its contents are lifted to the workspace root automatically. So these two structures are equivalent:
-
-```
-zip A:                    zip B:
-my-project/               main.py
-  main.py                 requirements.txt
-  requirements.txt
-```
+Admins bypass the time-window check on submit/edit.
 
 ## Quick Reference: curl
 
 ```bash
-# Register (saves cookie to cookies.txt)
-curl -c cookies.txt -X POST http://localhost:8000/api/auth/register \
-  -F "username=myuser" -F "password=mypass123"
-
-# Login (if already registered)
-curl -c cookies.txt -X POST http://localhost:8000/api/auth/login \
-  -F "username=myuser" -F "password=mypass123"
-
-# Check session
-curl -b cookies.txt http://localhost:8000/api/auth/me
-
-# Submit job
-curl -b cookies.txt -X POST http://localhost:8000/api/jobs \
-  -F "name=My Job" \
-  -F "file=@project.zip" \
-  -F "entry_command=python main.py" \
-  -F "scheduled_at=2026-07-14T15:00" \
-  -F "timeout_minutes=30"
-
-# List jobs
-curl -b cookies.txt http://localhost:8000/api/jobs
-
-# Get job detail
-curl -b cookies.txt http://localhost:8000/api/jobs/<job_id>
-
-# Get logs
-curl -b cookies.txt http://localhost:8000/api/jobs/<job_id>/logs
-
-# Get outputs
-curl -b cookies.txt http://localhost:8000/api/jobs/<job_id>/outputs
-
-# Cancel pending job
-curl -b cookies.txt -X DELETE http://localhost:8000/api/jobs/<job_id>
-
-# Logout
-curl -b cookies.txt -X POST http://localhost:8000/api/auth/logout
-```
-
-## Quick Reference: Python (requests)
-
-```python
-import requests
-
-base = "http://localhost:8000"
-s = requests.Session()
-
-# Register or login
-s.post(f"{base}/api/auth/register", data={"username": "myuser", "password": "mypass123"})
-# or:
-# s.post(f"{base}/api/auth/login", data={"username": "myuser", "password": "mypass123"})
-
-# Submit job
-with open("project.zip", "rb") as f:
-    resp = s.post(f"{base}/api/jobs", files={"file": f}, data={
-        "name": "My Job",
-        "entry_command": "python main.py",
-        "scheduled_at": "2026-07-14T15:00",
-        "timeout_minutes": 30,
-    })
-job_id = resp.json()["id"]
-
-# Poll status
-job = s.get(f"{base}/api/jobs/{job_id}").json()
-print(job["status"])
-
-# Get logs
-logs = s.get(f"{base}/api/jobs/{job_id}/logs").json()["logs"]
-
-# Get outputs
-outputs = s.get(f"{base}/api/jobs/{job_id}/outputs").json()["outputs"]
-for o in outputs:
-    print(o["s3_uri"], o["size"])
-```
-
-## Quick Reference: JavaScript (fetch)
-
-```javascript
-// Login (cookie is set automatically by browser)
-await fetch('/api/auth/login', {
-  method: 'POST',
-  body: new FormData(document.querySelector('#login-form')),
-});
-
-// Submit job
-const fd = new FormData();
-fd.append('name', 'My Job');
-fd.append('file', fileInput.files[0]);
-fd.append('entry_command', 'python main.py');
-fd.append('scheduled_at', '2026-07-14T15:00');
-fd.append('timeout_minutes', '30');
-const resp = await fetch('/api/jobs', { method: 'POST', body: fd });
-const { id } = await resp.json();
-
-// List jobs
-const jobs = await (await fetch('/api/jobs')).json();
+curl -c cj -X POST $B/api/auth/login -F username=alice -F password=secret
+curl -b cj -X POST $B/api/jobs \
+  -F "name=train v2" -F "image=ddp-pytorch-ssh:latest" \
+  -F "entry_command=python train.py" -F "scheduled_at=2026-07-20T22:00" \
+  -F "timeout_minutes=480" -F "gpus=1" -F "output_path=results"
+# -> note ssh_port/ssh_password, debug in the pod
+curl -b cj -X PATCH $B/api/jobs/<id> -F "gpus=2"            # pending only
+curl -b cj $B/api/jobs/<id>/logs
+curl -b cj -X DELETE $B/api/jobs/<id>
 ```
 
 ## Common Mistakes
 
 | Mistake | Fix |
 |---------|-----|
-| 401 on all job requests | Call `/api/auth/login` or `/api/auth/register` first; ensure cookie is sent |
-| 422 on job submit | All form fields including `file` must have a `name` attribute; `scheduled_at` is required |
-| 400 "Must upload a .zip file" | Ensure uploaded file ends with `.zip` |
-| 404 on job detail | Job doesn't exist or belongs to another user |
-| 409 on cancel | Cannot cancel a `running` job in mock mode |
-| Job runs immediately | `scheduled_at` is in the past — server schedules it for immediate execution |
-| Outputs not collected | Files must be in `output/` dir or listed in `manifest.json` at project root |
-| `scheduled_at` timezone confusion | HTML `datetime-local` gives naive local time; server converts to UTC. API callers should send local time string without timezone suffix |
+| No ssh info in response | Server is in mock mode (`DDP_EXECUTOR=mock`) — debug pods only exist in k8s mode |
+| `python: command not found` in cuda image | Base cuda image has no python; use `bash ...` or install python in the debug pod first |
+| output_path 400 | Must resolve to a dir inside `/workspace` (no `..`, not the root itself) |
+| 409 on PATCH | Only `pending` jobs are editable |
+| Files in output dir "lost" | By design: the output dir is harvested (moved to S3) after each run |
+| GPU job Pending forever | All GPUs allocated; it waits until `timeout_minutes` deadline → status `timeout` |
 
-## Mock → Production Swap
+## Mock Mode
 
-The backend is designed so two modules can be replaced without touching API routes:
-
-### Executor: `app/executor.py`
-
-| Mock | Production |
-|------|-----------|
-| `asyncio.create_subprocess_shell` | K8s `Job` with `activeDeadlineSeconds`, `ttlSecondsAfterFinished`, `backoffLimit: 0` |
-| `proc.kill()` on timeout | `activeDeadlineSeconds` auto-terminates Pod |
-| `shutil.rmtree(work_dir)` | `ttlSecondsAfterFinished: 60` auto-cleans Pod |
-| No GPU | HAMI vGPU scheduling via K8s device plugin annotations |
-
-The `execute(job_id)` method signature stays the same. Replace the internal implementation with a K8s client (`kubernetes` Python lib) that creates a `Job` manifest and watches for completion.
-
-### Storage: `app/storage.py`
-
-| Mock | Production |
-|------|-----------|
-| `shutil.copy2` to local dir | `boto3` `S3Client.upload_file` |
-| `Path.rglob` for listing | `boto3` `list_objects_v2` |
-
-The `upload_file(bucket, key, local_path)` and `list_objects(bucket, prefix)` method signatures stay the same. Replace internals with boto3 calls.
-
-### Database: `app/db.py`
-
-SQLite → PostgreSQL/MySQL. All functions use standard SQL, no SQLite-specific syntax. Swap the connection string and driver.
-
-## Architecture Reference
-
-```
-┌─────────────┐     ┌──────────────────────────────────┐
-│  Client     │────▶│  FastAPI (app/main.py)           │
-│ (browser/   │ REST│  ├── Auth (app/auth.py)          │
-│  CLI/SDK)   │     │  ├── DB (app/db.py, SQLite)      │
-└─────────────┘     │  ├── Scheduler (APScheduler)     │
-                    │  ├── Executor (app/executor.py)  │──▶ subprocess / K8s Job
-                    │  └── Storage (app/storage.py)    │──▶ filesystem / S3
-                    └──────────────────────────────────┘
-```
-
-### File Map
-
-| File | Responsibility |
-|------|---------------|
-| `app/main.py` | FastAPI routes, lifespan, scheduler init, frontend serving |
-| `app/auth.py` | Password hashing (pbkdf2_hmac), session tokens, `get_current_user` dependency |
-| `app/db.py` | SQLite: `jobs`, `users`, `sessions` tables; all CRUD functions |
-| `app/executor.py` | Unzip → pip install → run command → collect outputs → cleanup |
-| `app/storage.py` | Mock S3: `upload_file`, `list_objects` (swap for boto3) |
-| `frontend/index.html` | Single-page app: auth, job submit, list, detail modal, i18n |
-| `app/main.py:24-28` | `_parse_local_to_utc`: converts `datetime-local` to UTC ISO |
-| `app/main.py:31-45` | `lifespan`: reschedules pending jobs on restart |
+`DDP_EXECUTOR=mock` (tests use it via conftest): no cluster calls, no debug pod/ssh, job instantly transitions running→done with a stub log. API surface is identical.

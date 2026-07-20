@@ -85,6 +85,18 @@ class TestAuth:
         assert resp.status_code == 200
         assert resp.json()["username"] == "alice"
 
+    def test_change_password(self, client):
+        client.post("/api/auth/register", data={"username": "pwuser", "password": "oldpass1"})
+        r = client.post("/api/auth/password", data={"old_password": "oldpass1", "new_password": "newpass2"})
+        assert r.status_code == 200
+        client.post("/api/auth/logout")
+        assert client.post("/api/auth/login", data={"username": "pwuser", "password": "oldpass1"}).status_code == 401
+        assert client.post("/api/auth/login", data={"username": "pwuser", "password": "newpass2"}).status_code == 200
+
+    def test_change_password_wrong_old(self, authed_client):
+        r = authed_client.post("/api/auth/password", data={"old_password": "nope", "new_password": "newpass2"})
+        assert r.status_code == 403
+
     def test_logout_clears_session(self, authed_client):
         authed_client.post("/api/auth/logout")
         assert authed_client.get("/api/auth/me").status_code == 401
@@ -148,6 +160,24 @@ class TestJobs:
             data={"name": "bad", "image": "windowsxp", "scheduled_at": FUTURE},
         )
         assert resp.status_code == 400
+
+    def test_cpu_quota_reject(self, authed_client):
+        resp = authed_client.post(
+            "/api/jobs",
+            data={"name": "fat", "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE,
+                  "cpu": "999"},
+        )
+        assert resp.status_code == 403
+        assert "CPU quota" in resp.json()["detail"]
+
+    def test_memory_quota_reject(self, authed_client):
+        resp = authed_client.post(
+            "/api/jobs",
+            data={"name": "fat", "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE,
+                  "memory_gb": "999"},
+        )
+        assert resp.status_code == 403
+        assert "Memory quota" in resp.json()["detail"]
 
     def test_submit_requires_auth(self, client):
         resp = client.post(
