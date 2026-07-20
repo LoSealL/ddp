@@ -198,3 +198,28 @@ class TestAdminUserColumns:
         assert db.count_admins() == 1
         db.update_user(uid2, is_admin=1)
         assert db.count_admins() == 2
+
+
+def test_repeat_columns_default(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
+    db.init_db()
+    db.create_user("u", "h", "s")
+    db.create_job("jid1", user_id=1, name="n", image="img", entry_command="c",
+                  scheduled_at="2099-01-01T00:00", timeout_minutes=5)
+    job = db.get_job("jid1")
+    assert job["repeat_type"] == "none"
+    assert job["repeat_weekdays"] is None
+
+
+def test_create_job_with_repeat(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
+    db.init_db()
+    db.create_user("u", "h", "s")
+    db.create_job("jid2", user_id=1, name="n", image="img", entry_command="c",
+                  scheduled_at="2099-01-01T00:00", timeout_minutes=5,
+                  repeat_type="weekly", repeat_weekdays="1,3,5")
+    job = db.get_job("jid2")
+    assert job["repeat_type"] == "weekly"
+    assert job["repeat_weekdays"] == "1,3,5"

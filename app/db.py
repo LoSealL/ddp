@@ -137,6 +137,12 @@ def init_db():
         conn.execute("ALTER TABLE users ADD COLUMN storage_quota_override_gb REAL")
     except sqlite3.OperationalError:
         pass
+    for ddl in ["ALTER TABLE jobs ADD COLUMN repeat_type TEXT NOT NULL DEFAULT 'none'",
+                "ALTER TABLE jobs ADD COLUMN repeat_weekdays TEXT"]:
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     default_params = [
         ("time_window_start", "22:00"),
@@ -160,15 +166,18 @@ def init_db():
 
 def create_job(job_id, user_id, name, image, entry_command, scheduled_at, timeout_minutes,
                gpus=0, gpu_mem_mb=None, ssh_port=None, ssh_password=None, status="pending",
-               output_path="output", cpu=2, memory_gb=4):
+               output_path="output", cpu=2, memory_gb=4,
+               repeat_type="none", repeat_weekdays=None):
     now = now_iso()
     conn = get_db()
     conn.execute("""
         INSERT INTO jobs (id, user_id, name, filename, image, entry_command, scheduled_at, timeout_minutes,
-                          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, cpu, memory_gb, created_at)
-        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, cpu, memory_gb,
+                          repeat_type, repeat_weekdays, created_at)
+        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (job_id, user_id, name, image, entry_command, scheduled_at, timeout_minutes,
-          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, cpu, memory_gb, now))
+          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, cpu, memory_gb,
+          repeat_type, repeat_weekdays, now))
     conn.commit()
     conn.close()
 
