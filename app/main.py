@@ -183,6 +183,26 @@ def _validate_output_path(p: str) -> str:
     return p
 
 
+def _validate_repeat(repeat_type: str | None, repeat_weekdays: list[str] | None):
+    """返回 (repeat_type, repeat_weekdays_str_or_None)；非法时 raise HTTPException(400)."""
+    repeat_type = (repeat_type or "none").strip()
+    if repeat_type not in ("none", "daily", "weekly"):
+        raise HTTPException(400, f"Invalid repeat_type: {repeat_type}")
+    days: list[int] = []
+    if repeat_type == "weekly":
+        if not repeat_weekdays:
+            raise HTTPException(400, "weekly requires at least one weekday (1-7)")
+        for d in repeat_weekdays:
+            try:
+                n = int(d)
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"Invalid weekday: {d}")
+            if not 1 <= n <= 7:
+                raise HTTPException(400, f"Weekday must be 1-7, got {n}")
+            days.append(n)
+    return repeat_type, (",".join(map(str, sorted(set(days))))) if days else None
+
+
 # ── Jobs (protected) ─────────────────────────────────
 
 @app.post("/api/jobs")
@@ -198,6 +218,8 @@ async def create_job(
     cpu: float = Form(2),
     memory_gb: float = Form(4),
     output_path: str = Form("output"),
+    repeat_type: str = Form("none"),
+    repeat_weekdays: list[str] = Form([]),
 ):
     output_path = _validate_output_path(output_path)
     if cpu <= 0 or memory_gb <= 0:
@@ -254,11 +276,13 @@ async def create_job(
             raise HTTPException(502, f"Failed to create debug environment: {e}")
 
     initializing = bool(ssh_info)
+    rt, rw = _validate_repeat(repeat_type, repeat_weekdays)
     db.create_job(job_id, user["id"], name, image, entry_command, scheduled_utc,
                   timeout_minutes, gpus=gpus, gpu_mem_mb=gpu_mem_mb if gpus else None,
                   ssh_port=ssh_info.get("ssh_port"), ssh_password=ssh_info.get("ssh_password"),
                   status="initializing" if initializing else "pending",
-                  output_path=output_path, cpu=cpu, memory_gb=memory_gb)
+                  output_path=output_path, cpu=cpu, memory_gb=memory_gb,
+                  repeat_type=rt, repeat_weekdays=rw)
     if initializing:
         asyncio.create_task(executor.wait_ready(job_id))
 
@@ -352,7 +376,9 @@ async def update_pending_job(job_id: str, user: dict = Depends(auth.get_current_
                              scheduled_at: str = Form(None), timeout_minutes: int = Form(None),
                              gpus: int = Form(None), gpu_mem_mb: int | None = Form(None),
                              cpu: float = Form(None), memory_gb: float = Form(None),
-                             output_path: str = Form(None)):
+                             output_path: str = Form(None),
+                             repeat_type: str = Form(None),
+                             repeat_weekdays: list[str] = Form(None)):
     job = db.get_job(job_id)
     if not job or (job.get("user_id") != user["id"] and not user.get("is_admin")):
         raise HTTPException(404)
@@ -360,7 +386,8 @@ async def update_pending_job(job_id: str, user: dict = Depends(auth.get_current_
         raise HTTPException(409, "Only pending jobs can be edited")
     return _apply_job_edits(job, user, name, entry_command, scheduled_at,
                             timeout_minutes, gpus, gpu_mem_mb, output_path,
-                            cpu=cpu, memory_gb=memory_gb)
+                            cpu=cpu, memory_gb=memory_gb,
+                            repeat_type=repeat_type, repeat_weekdays=repeat_weekdays)
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -410,7 +437,8 @@ async def admin_list_jobs(user: dict = Depends(auth.require_admin)):
 
 def _apply_job_edits(job, user, name, entry_command, scheduled_at,
                      timeout_minutes, gpus, gpu_mem_mb, output_path,
-                     cpu=None, memory_gb=None):
+                     cpu=None, memory_gb=None,
+                     repeat_type=None, repeat_weekdays=None):
     updates = {}
     if (cpu is not None and cpu <= 0) or (memory_gb is not None and memory_gb <= 0):
         raise HTTPException(400, "cpu and memory_gb must be positive")
@@ -463,6 +491,18 @@ def _apply_job_edits(job, user, name, entry_command, scheduled_at,
         )
     if output_path is not None:
         updates["output_path"] = _validate_output_path(output_path)
+    if repeat_type is not None or repeat_weekdays is not None:
+        rt = repeat_type or job.get("repeat_type") or "none"
+        # weekdays 没传就保留原值（仅当仍是 weekly）
+        if repeat_weekdays is None:
+            existing_days = (job.get("repeat_weekdays") or "").split(",")
+            existing_days = [d for d in existing_days if d.strip()]
+            rw_days = existing_days if rt == "weekly" else None
+        else:
+            rw_days = repeat_weekdays
+        rt, rw = _validate_repeat(rt, rw_days if rw_days else None)
+        updates["repeat_type"] = rt
+        updates["repeat_weekdays"] = rw
     if not updates:
         raise HTTPException(400, "Nothing to update")
     db.update_job(job["id"], **updates)
@@ -476,7 +516,9 @@ async def admin_update_job(job_id: str, user: dict = Depends(auth.require_admin)
                            scheduled_at: str = Form(None), timeout_minutes: int = Form(None),
                            gpus: int = Form(None), gpu_mem_mb: int | None = Form(None),
                            cpu: float = Form(None), memory_gb: float = Form(None),
-                           output_path: str = Form(None)):
+                           output_path: str = Form(None),
+                           repeat_type: str = Form(None),
+                           repeat_weekdays: list[str] = Form(None)):
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(404)
@@ -484,7 +526,8 @@ async def admin_update_job(job_id: str, user: dict = Depends(auth.require_admin)
         raise HTTPException(409, "Only pending jobs can be edited")
     return _apply_job_edits(job, user, name, entry_command, scheduled_at,
                             timeout_minutes, gpus, gpu_mem_mb, output_path,
-                            cpu=cpu, memory_gb=memory_gb)
+                            cpu=cpu, memory_gb=memory_gb,
+                            repeat_type=repeat_type, repeat_weekdays=repeat_weekdays)
 
 
 @app.delete("/api/admin/jobs/{job_id}")

@@ -194,6 +194,64 @@ class TestJobs:
         assert client.get(f"/api/jobs/{job_id}").status_code == 404
         assert client.get(f"/api/jobs").json() == []
 
+    def test_submit_weekly_without_weekdays_rejected(self, authed_client):
+        resp = authed_client.post(
+            "/api/jobs",
+            data={"name": "wk", "image": "ddp-cuda-ssh:latest",
+                  "scheduled_at": FUTURE, "repeat_type": "weekly"},
+        )
+        assert resp.status_code == 400
+        assert "weekday" in resp.json()["detail"].lower()
+
+    def test_submit_weekly_bad_weekday_rejected(self, authed_client):
+        resp = authed_client.post(
+            "/api/jobs",
+            data={"name": "wk", "image": "ddp-cuda-ssh:latest",
+                  "scheduled_at": FUTURE, "repeat_type": "weekly",
+                  "repeat_weekdays": ["1", "8"]},
+        )
+        assert resp.status_code == 400
+
+    def test_submit_weekly_ok(self, authed_client):
+        resp = authed_client.post(
+            "/api/jobs",
+            data={"name": "wk", "image": "ddp-cuda-ssh:latest",
+                  "scheduled_at": FUTURE, "repeat_type": "weekly",
+                  "repeat_weekdays": ["1", "3", "5"]},
+        )
+        assert resp.status_code == 200
+        job_id = resp.json()["id"]
+        job = authed_client.get(f"/api/jobs/{job_id}").json()
+        assert job["repeat_type"] == "weekly"
+        assert job["repeat_weekdays"] == "1,3,5"
+
+    def test_submit_daily_clears_weekdays(self, authed_client):
+        resp = authed_client.post(
+            "/api/jobs",
+            data={"name": "daily", "image": "ddp-cuda-ssh:latest",
+                  "scheduled_at": FUTURE, "repeat_type": "daily",
+                  "repeat_weekdays": ["1", "2"]},
+        )
+        assert resp.status_code == 200
+        job = authed_client.get(f"/api/jobs/{resp.json()['id']}").json()
+        assert job["repeat_type"] == "daily"
+        assert job["repeat_weekdays"] is None
+
+    def test_submit_bad_repeat_type_rejected(self, authed_client):
+        resp = authed_client.post(
+            "/api/jobs",
+            data={"name": "x", "image": "ddp-cuda-ssh:latest",
+                  "scheduled_at": FUTURE, "repeat_type": "monthly"},
+        )
+        assert resp.status_code == 400
+
+    def test_edit_repeat_type(self, authed_client):
+        job_id = _submit_job(authed_client)
+        resp = authed_client.patch(f"/api/jobs/{job_id}", data={
+            "repeat_type": "daily"})
+        assert resp.status_code == 200
+        assert resp.json()["repeat_type"] == "daily"
+
 
 # ── S3-backed endpoints ───────────────────────
 
