@@ -115,7 +115,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     timeWindowStart: "Start Time", timeWindowEnd: "End Time",
     timeWindowRepeat: "Repeat",
     repeatNone: "One-off", repeatDaily: "Daily", repeatWeekly: "Weekly",
-    repeat: "Repeat", repeatWeekdays: "Weekdays",
+    repeat: "Repeat", repeatWeekdays: "Weekdays", repeatWeekdaysLabel: "Weekdays",
     weekdaysRequired: "Select at least one weekday.",
     mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun",
     repeatSummaryNone: "One-off", repeatSummaryDaily: "Daily",
@@ -192,7 +192,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     timeWindowStart: "开始时间", timeWindowEnd: "结束时间",
     timeWindowRepeat: "重复",
     repeatNone: "一次性", repeatDaily: "每天", repeatWeekly: "每周",
-    repeat: "周期", repeatWeekdays: "星期",
+    repeat: "周期", repeatWeekdays: "工作日", repeatWeekdaysLabel: "星期",
     weekdaysRequired: "至少选择一个星期。",
     mon: "周一", tue: "周二", wed: "周三", thu: "周四", fri: "周五", sat: "周六", sun: "周日",
     repeatSummaryNone: "一次性", repeatSummaryDaily: "每天",
@@ -968,7 +968,7 @@ function showEditForm(jobId: string): void {
         </div>
       </div>
       <div class="field" id="edit-repeat-weekdays-field" style="display:${rt === 'weekly' ? '' : 'none'}">
-        <label>${t('repeatWeekdays')}</label>
+        <label>${t('repeatWeekdaysLabel')}</label>
         <div class="weekday-checks">
           ${['1','2','3','4','5','6','7'].map(n => `<label class="weekday"><input type="checkbox" name="repeat_weekdays" value="${n}" ${dayChecked(n)} /> <span>${t(['mon','tue','wed','thu','fri','sat','sun'][Number(n)-1])}</span></label>`).join('')}
         </div>
