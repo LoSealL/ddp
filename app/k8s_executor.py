@@ -340,7 +340,11 @@ class K8sExecutor:
             # 守卫 2：prepare 是慢调用，期间用户可能已 cancel/delete；
             # 拆掉刚建的 debug pod，不碰 DB/scheduler
             if (db.get_job(job_id) or {}).get("status") != "pending":
-                await self.teardown_debug(job_id)
+                try:
+                    await self.teardown_debug(job_id)
+                except Exception as te:
+                    db.log_event("WARNING", "system",
+                                 f"teardown_debug after cancel failed for {job_id}: {te}")
                 return
             db.update_job(job_id,
                           ssh_port=ssh_info["ssh_port"],
