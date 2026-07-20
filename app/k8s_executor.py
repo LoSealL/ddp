@@ -3,6 +3,7 @@ import os
 import secrets
 from datetime import datetime, timezone
 
+from apscheduler.triggers.date import DateTrigger
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 
@@ -208,6 +209,11 @@ class K8sExecutor:
         job = db.get_job(job_id)
         if not job:
             return
+        if job["status"] != "pending":
+            # 上一轮还在 running/initializing，或已被 cancelled — 跳过本次触发
+            db.log_event("DEBUG", "system",
+                         f"Trigger skipped (status={job['status']}): {job_id}")
+            return
         db.update_job(job_id, status="running",
                       started_at=db.now_iso())
         db.log_event("DEBUG", "system", f"Job started (k8s): {job_id}")
@@ -279,6 +285,63 @@ class K8sExecutor:
                       error=error)
         db.log_event("DEBUG", "system", f"Job finished: {job_id} status={result}")
 
+        # ── rearm recurring jobs (daily/weekly) ──
+        try:
+            self._maybe_rearm(job_id)
+        except Exception as e:
+            db.log_event("ERROR", "system", f"Rearm failed for {job_id}: {e}")
+
+    def _maybe_rearm(self, job_id: str):
+        """若 job 是周期任务，算下次触发时间、置 pending、异步重建 debug pod。"""
+        from . import timecheck as _tc
+        from .main import _not_in_past
+        job = db.get_job(job_id)
+        if not job or job.get("repeat_type") not in ("daily", "weekly"):
+            return
+        next_dt = _tc._compute_next_run(job)
+        owner = db.get_user_by_id(job["user_id"]) or {}
+        if not owner.get("is_admin"):
+            next_dt = _tc.check_scheduled_time(next_dt)
+        next_dt = _not_in_past(next_dt)
+        db.update_job(job_id,
+                      status="pending",
+                      scheduled_at=next_dt.isoformat(),
+                      started_at=None, finished_at=None,
+                      error=None, output_count=0)
+        db.log_event("INFO", "job",
+                     f"Job rearmed: {job_id} -> {next_dt.isoformat()}",
+                     user_id=job["user_id"])
+        asyncio.create_task(self._rearm_prepare(job_id, job, owner))
+
+    async def _rearm_prepare(self, job_id: str, job_snapshot: dict, owner: dict):
+        """重建 debug pod 并刷新 ssh 信息、重排调度。"""
+        from .main import scheduler
+        from datetime import datetime as _dt
+        try:
+            ssh_info = await self.prepare({
+                "id": job_id,
+                "user_id": job_snapshot["user_id"],
+                "image": job_snapshot["image"],
+                "storage_gb": owner.get("storage_quota_override_gb")
+                              or db.get_param("storage_default_quota_gb")
+                              or 10,
+            })
+            db.update_job(job_id,
+                          ssh_port=ssh_info["ssh_port"],
+                          ssh_password=ssh_info["ssh_password"])
+            # 重新读出 scheduled_at（_maybe_rearm 已写入），并排触发器
+            job_now = db.get_job(job_id)
+            next_dt = _dt.fromisoformat(job_now["scheduled_at"])
+            scheduler.add_job(self.execute, DateTrigger(run_date=next_dt),
+                              args=[job_id], id=job_id, replace_existing=True)
+            asyncio.create_task(self.wait_ready(job_id))
+        except Exception as e:
+            db.log_event("ERROR", "system", f"Rearm prepare failed for {job_id}: {e}")
+            # prepare 失败 — 标 failed，停止循环
+            db.update_job(job_id, status="failed",
+                          finished_at=db.now_iso(),
+                          error=f"rearm prepare failed: {e}")
+
     # ── cancel / cleanup ────────────────────────
 
     async def cancel(self, job_id: str) -> bool:
@@ -334,8 +397,13 @@ class K8sExecutor:
             resp = await asyncio.to_thread(
                 self.core.read_namespaced_pod_log, runner[0].metadata.name, NAMESPACE,
                 _preload_content=False)
-            self.storage.upload_bytes(f"jobs/{job_id}/logs/run.log",
-                                      resp.data.decode("utf-8", errors="replace").encode())
+            payload = resp.data.decode("utf-8", errors="replace").encode()
+            job_row = db.get_job(job_id) or {}
+            if job_row.get("repeat_type") in ("daily", "weekly"):
+                sep = f"\n\n==== run @ {db.now_iso()} ====\n".encode()
+                self.storage.append_bytes(f"jobs/{job_id}/logs/run.log", sep + payload)
+            else:
+                self.storage.upload_bytes(f"jobs/{job_id}/logs/run.log", payload)
         except Exception as e:
             db.log_event("WARNING", "system", f"Log collection failed for {job_id}: {e}")
 
