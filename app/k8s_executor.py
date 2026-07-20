@@ -40,6 +40,7 @@ class K8sExecutor:
             config.load_kube_config()
         self.batch = client.BatchV1Api()
         self.core = client.CoreV1Api()
+        self._bg_tasks: set = set()
 
     def _name(self, job_id: str) -> str:
         return f"ddp-{job_id}"
@@ -291,6 +292,13 @@ class K8sExecutor:
         except Exception as e:
             db.log_event("ERROR", "system", f"Rearm failed for {job_id}: {e}")
 
+    def _spawn_bg(self, coro):
+        """Fire-and-forget with strong ref so the loop can't GC it mid-flight."""
+        t = asyncio.create_task(coro)
+        self._bg_tasks.add(t)
+        t.add_done_callback(self._bg_tasks.discard)
+        return t
+
     def _maybe_rearm(self, job_id: str):
         """若 job 是周期任务，算下次触发时间、置 pending、异步重建 debug pod。"""
         from . import timecheck as _tc
@@ -311,13 +319,16 @@ class K8sExecutor:
         db.log_event("INFO", "job",
                      f"Job rearmed: {job_id} -> {next_dt.isoformat()}",
                      user_id=job["user_id"])
-        asyncio.create_task(self._rearm_prepare(job_id, job, owner))
+        self._spawn_bg(self._rearm_prepare(job_id, job, owner))
 
     async def _rearm_prepare(self, job_id: str, job_snapshot: dict, owner: dict):
         """重建 debug pod 并刷新 ssh 信息、重排调度。"""
         from .main import scheduler
         from datetime import datetime as _dt
         try:
+            # 守卫 1：进入时若已非 pending（被 cancel/delete 抢先），直接退出
+            if (db.get_job(job_id) or {}).get("status") != "pending":
+                return
             ssh_info = await self.prepare({
                 "id": job_id,
                 "user_id": job_snapshot["user_id"],
@@ -326,6 +337,11 @@ class K8sExecutor:
                               or db.get_param("storage_default_quota_gb")
                               or 10,
             })
+            # 守卫 2：prepare 是慢调用，期间用户可能已 cancel/delete；
+            # 拆掉刚建的 debug pod，不碰 DB/scheduler
+            if (db.get_job(job_id) or {}).get("status") != "pending":
+                await self.teardown_debug(job_id)
+                return
             db.update_job(job_id,
                           ssh_port=ssh_info["ssh_port"],
                           ssh_password=ssh_info["ssh_password"])
@@ -334,7 +350,7 @@ class K8sExecutor:
             next_dt = _dt.fromisoformat(job_now["scheduled_at"])
             scheduler.add_job(self.execute, DateTrigger(run_date=next_dt),
                               args=[job_id], id=job_id, replace_existing=True)
-            asyncio.create_task(self.wait_ready(job_id))
+            self._spawn_bg(self.wait_ready(job_id))
         except Exception as e:
             db.log_event("ERROR", "system", f"Rearm prepare failed for {job_id}: {e}")
             # prepare 失败 — 标 failed，停止循环
