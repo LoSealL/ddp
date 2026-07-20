@@ -25,6 +25,8 @@ interface Job {
   cpu: number;
   memory_gb: number;
   output_path: string;
+  repeat_type: string;
+  repeat_weekdays: string | null;
   ssh_port: number | null;
   ssh_password: string | null;
 }
@@ -111,7 +113,13 @@ const I18N: Record<Lang, Record<string, string>> = {
     created: "Created", isAdmin: "Admin",
     timeWindow: "Allowed Running Window",
     timeWindowStart: "Start Time", timeWindowEnd: "End Time",
-    timeWindowRepeat: "Repeat", repeatDaily: "Daily", repeatWeekdays: "Weekdays", repeatWeekly: "Weekly",
+    timeWindowRepeat: "Repeat",
+    repeatNone: "One-off", repeatDaily: "Daily", repeatWeekly: "Weekly",
+    repeat: "Repeat", repeatWeekdays: "Weekdays",
+    weekdaysRequired: "Select at least one weekday.",
+    mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun",
+    repeatSummaryNone: "One-off", repeatSummaryDaily: "Daily",
+    repeatSummaryWeekly: "Weekly ({days})",
     gpuDefaultQuota: "Default GPU Quota",
     storageDefaultQuota: "Default Storage (GB)", gpuDevices: "GPU Devices",
     gpuUuid: "UUID", gpuEnabled: "Enabled", gpuType: "Type",
@@ -182,7 +190,13 @@ const I18N: Record<Lang, Record<string, string>> = {
     created: "创建时间", isAdmin: "管理员",
     timeWindow: "允许运行时间段",
     timeWindowStart: "开始时间", timeWindowEnd: "结束时间",
-    timeWindowRepeat: "重复", repeatDaily: "每天", repeatWeekdays: "工作日", repeatWeekly: "每周",
+    timeWindowRepeat: "重复",
+    repeatNone: "一次性", repeatDaily: "每天", repeatWeekly: "每周",
+    repeat: "周期", repeatWeekdays: "星期",
+    weekdaysRequired: "至少选择一个星期。",
+    mon: "周一", tue: "周二", wed: "周三", thu: "周四", fri: "周五", sat: "周六", sun: "周日",
+    repeatSummaryNone: "一次性", repeatSummaryDaily: "每天",
+    repeatSummaryWeekly: "每周 ({days})",
     gpuDefaultQuota: "默认 GPU 配额",
     storageDefaultQuota: "默认存储 (GB)", gpuDevices: "GPU 设备",
     gpuUuid: "UUID", gpuEnabled: "启用", gpuType: "型号",
@@ -689,6 +703,12 @@ async function submitJob(e: SubmitEvent): Promise<void> {
   const btn = $<HTMLButtonElement>('submit-btn');
   const form = e.target as HTMLFormElement;
   const fd = new FormData(form);
+
+  if (fd.get('repeat_type') === 'weekly') {
+    const days = fd.getAll('repeat_weekdays');
+    if (days.length === 0) { alert(t('weekdaysRequired')); return; }
+  }
+
   btn.disabled = true; btn.textContent = t('scheduling');
   try {
     const resp = await fetch(API, { method: 'POST', body: fd });
@@ -700,6 +720,8 @@ async function submitJob(e: SubmitEvent): Promise<void> {
     const result = await resp.json().catch(() => ({} as { queued?: boolean }));
     if (result.queued) alert(t('queued'));
     form.reset();
+    const wkd = document.getElementById('repeat-weekdays-field');
+    if (wkd) wkd.style.display = 'none';
     setDefaultTime();
     const pt = imageChoices.find(i => i.includes('pytorch'));
     if (pt) ($('image-select') as HTMLSelectElement).value = pt;
@@ -745,6 +767,19 @@ async function refreshGpus(): Promise<void> {
 
 // ── Job list ─────────────────────────────────
 function statusLabel(s: string): string { return t('st_' + s) || s; }
+
+function formatRepeat(job: Job): string {
+  const rt = job.repeat_type || 'none';
+  if (rt === 'none') return t('repeatSummaryNone');
+  if (rt === 'daily') return t('repeatSummaryDaily');
+  if (rt === 'weekly') {
+    const names = ['mon','tue','wed','thu','fri','sat','sun'];
+    const days = (job.repeat_weekdays || '').split(',').filter(Boolean)
+      .map(n => t(names[Number(n) - 1])).join(' ');
+    return t('repeatSummaryWeekly').replace('{days}', days);
+  }
+  return rt;
+}
 
 async function refreshJobs(): Promise<void> {
   const resp = await fetch(isAdmin ? '/api/admin/jobs' : API);
@@ -840,6 +875,7 @@ async function openModal(jobId: string): Promise<void> {
         <div class="kv"><span class="k">${t('gpus')}</span><span class="v">${job.gpus ? `${job.gpus}${job.gpu_mem_mb ? ` · ${job.gpu_mem_mb} MB` : ''}` : '0 (CPU)'}</span></div>
         <div class="kv"><span class="k">CPU / ${t('memoryGb')}</span><span class="v">${job.cpu ?? '—'} / ${job.memory_gb ?? '—'} GB</span></div>
         <div class="kv"><span class="k">${t('scheduledUtc')}</span><span class="v">${job.scheduled_at ? new Date(job.scheduled_at).toLocaleString() : '—'}</span></div>
+        <div class="kv"><span class="k">${t('repeat')}</span><span class="v">${formatRepeat(job)}</span></div>
         <div class="kv"><span class="k">${t('started')}</span><span class="v">${job.started_at ? new Date(job.started_at).toLocaleString() : '—'}</span></div>
         <div class="kv"><span class="k">${t('finished')}</span><span class="v">${job.finished_at ? new Date(job.finished_at).toLocaleString() : '—'}</span></div>
         <div class="kv"><span class="k">${t('outputs')}</span><span class="v">${job.output_count || 0} ${t('files')}</span></div>
@@ -915,11 +951,28 @@ function toLocalInput(iso: string): string {
 function showEditForm(jobId: string): void {
   const job = allJobs.find(j => j.id === jobId);
   if (!job) return;
+  const rt = job.repeat_type || 'none';
+  const days = (job.repeat_weekdays || '').split(',').filter(Boolean);
+  const dayChecked = (n: string) => days.includes(n) ? 'checked' : '';
   $('modal-body').innerHTML = `
     <form id="edit-form" data-job-id="${job.id}">
       <div class="field"><label>${t('jobName')}</label><input name="name" value="${escapeHtml(job.name)}" required /></div>
       <div class="field"><label>${t('entryCommand')}</label><input name="entry_command" value="${escapeHtml(job.entry_command)}" required /></div>
       <div class="field"><label>${t('scheduledStart')}</label><input type="datetime-local" name="scheduled_at" value="${toLocalInput(job.scheduled_at)}" required /></div>
+      <div class="field">
+        <label>${t('repeat')}</label>
+        <div class="repeat-options">
+          <label class="repeat-radio"><input type="radio" name="repeat_type" value="none" ${rt === 'none' ? 'checked' : ''} /> <span>${t('repeatNone')}</span></label>
+          <label class="repeat-radio"><input type="radio" name="repeat_type" value="daily" ${rt === 'daily' ? 'checked' : ''} /> <span>${t('repeatDaily')}</span></label>
+          <label class="repeat-radio"><input type="radio" name="repeat_type" value="weekly" ${rt === 'weekly' ? 'checked' : ''} /> <span>${t('repeatWeekly')}</span></label>
+        </div>
+      </div>
+      <div class="field" id="edit-repeat-weekdays-field" style="display:${rt === 'weekly' ? '' : 'none'}">
+        <label>${t('repeatWeekdays')}</label>
+        <div class="weekday-checks">
+          ${['1','2','3','4','5','6','7'].map(n => `<label class="weekday"><input type="checkbox" name="repeat_weekdays" value="${n}" ${dayChecked(n)} /> <span>${t(['mon','tue','wed','thu','fri','sat','sun'][Number(n)-1])}</span></label>`).join('')}
+        </div>
+      </div>
       <div class="field"><label>${t('maxRuntime')}</label><input type="number" name="timeout_minutes" value="${job.timeout_minutes}" min="1" max="1440" /></div>
       <div class="field"><label>${t('outputPath')}</label><input name="output_path" value="${escapeHtml(job.output_path || 'output')}" /></div>
       <div class="field"><label>${t('gpus')}</label><input type="number" name="gpus" value="${job.gpus}" min="0" max="${gpuQuota}" /></div>
@@ -928,6 +981,13 @@ function showEditForm(jobId: string): void {
       <div class="field"><label>${t('gpuMem')}</label><input type="number" name="gpu_mem_mb" value="${job.gpu_mem_mb ?? ''}" min="0" step="1024" /></div>
       <button type="submit" class="btn-submit">${t('save')}</button>
     </form>`;
+
+  document.querySelectorAll<HTMLInputElement>('#edit-form input[name="repeat_type"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      const f = document.getElementById('edit-repeat-weekdays-field');
+      if (f) f.style.display = (radio as HTMLInputElement).value === 'weekly' && radio.checked ? '' : 'none';
+    });
+  });
 }
 
 async function saveEdit(e: SubmitEvent): Promise<void> {
@@ -1043,6 +1103,14 @@ document.addEventListener('DOMContentLoaded', () => {
   $('btn-logout').addEventListener('click', doLogout);
   $('btn-passwd').addEventListener('click', showPasswordForm);
   $('job-form').addEventListener('submit', submitJob);
+  document.querySelectorAll<HTMLInputElement>('input[name="repeat_type"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      const weeklyField = document.getElementById('repeat-weekdays-field');
+      if (weeklyField) {
+        weeklyField.style.display = (radio as HTMLInputElement).value === 'weekly' && radio.checked ? '' : 'none';
+      }
+    });
+  });
   $('gpus').addEventListener('input', () => {
     $('gpu-mem-field').style.display = parseInt($<HTMLInputElement>('gpus').value) > 0 ? '' : 'none';
   });
