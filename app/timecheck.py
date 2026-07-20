@@ -51,3 +51,25 @@ def check_scheduled_time(local_dt: datetime) -> datetime:
         return local_dt
 
     return next_window_open(local_dt, start_h, start_m, end_h, end_m, repeat)
+
+
+def _compute_next_run(job: dict) -> datetime:
+    """从 job['scheduled_at'] 算下一个 daily/weekly 触发时间点。
+
+    从 scheduled_at 的第二天起找，避免本轮立刻再次触发。
+    """
+    from . import db as _db
+    cur = datetime.fromisoformat(job["scheduled_at"])
+    if cur.tzinfo is None:
+        cur = cur.replace(tzinfo=_db.get_tz())
+    cur = cur.replace(second=0, microsecond=0)
+    if job.get("repeat_type") == "daily":
+        return cur + timedelta(days=1)
+    # weekly
+    raw = job.get("repeat_weekdays") or "1"
+    days = sorted({int(d) for d in raw.split(",") if d.strip()})
+    for offset in range(1, 8):
+        cand = cur + timedelta(days=offset)
+        if cand.isoweekday() in days:
+            return cand
+    raise ValueError("No matching weekday within 7 days")
