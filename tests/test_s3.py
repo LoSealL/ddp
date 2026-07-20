@@ -100,6 +100,29 @@ class TestUploadDownload:
         storage.upload_bytes(fresh_key, data)
         assert storage.get_object_bytes(fresh_key) == data
 
+    def test_append_first_write(self, storage, fresh_key):
+        # key 不存在时等价于 upload
+        storage.append_bytes(fresh_key, b"first\n")
+        assert storage.get_object_bytes(fresh_key) == b"first\n"
+
+    def test_append_concatenates(self, storage, fresh_key):
+        storage.append_bytes(fresh_key, b"aaa\n")
+        storage.append_bytes(fresh_key, b"bbb\n")
+        assert storage.get_object_bytes(fresh_key) == b"aaa\nbbb\n"
+
+    def test_append_truncates_to_tail_when_over_cap(self, storage):
+        key = "test/append-truncate"
+        cap = 10
+        # 第一次写 8 字节，未超 cap
+        storage.append_bytes(key, b"01234567", cap=cap)
+        # 第二次追加 5 字节，总 13 > cap=10，只保留尾部 10 字节
+        storage.append_bytes(key, b"89abc", cap=cap)
+        result = storage.get_object_bytes(key)
+        assert len(result) == 10
+        assert result == b"3456789abc"  # 尾部 10 字节
+        # 清理
+        storage.delete_prefix("test/append-truncate")
+
 
 # ── Error cases ───────────────────────────────
 

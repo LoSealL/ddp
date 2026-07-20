@@ -53,6 +53,21 @@ class Storage:
         self.s3.upload_fileobj(io.BytesIO(data), self.bucket, key)
         return f"s3://{self.bucket}/{key}"
 
+    def append_bytes(self, key: str, data: bytes, cap: int = 10 * 1024 * 1024) -> str:
+        """S3 不支持原生 append：读旧 → 拼接 → 裁剪尾部 → 重传。
+
+        key 不存在时按空串处理；超 cap 字节时只保留尾部 cap 字节。
+        """
+        try:
+            existing = self.get_object_bytes(key)
+        except ClientError:
+            existing = b""
+        combined = existing + data
+        if len(combined) > cap:
+            combined = combined[-cap:]
+        self.upload_bytes(key, combined)
+        return f"s3://{self.bucket}/{key}"
+
     def list_objects(self, bucket: str, prefix: str = "") -> list[dict]:
         resp = self.s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
         results = []
