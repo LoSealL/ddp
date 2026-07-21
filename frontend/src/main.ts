@@ -92,7 +92,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     allStatuses: "All Statuses",
     loading: "Loading...", jobDetail: "Job Detail",
     status: "Status", originalFile: "Original File", entryCmd: "Entry Command",
-    maxRuntimeLabel: "Max Runtime", scheduledUtc: "Scheduled (UTC)",
+    maxRuntimeLabel: "Max Runtime", scheduledUtc: "Scheduled",
     started: "Started", finished: "Finished", outputs: "Outputs", s3Prefix: "S3 Prefix",
     cancelJob: "Cancel Job", cancelConfirm: "Cancel this job?",
     editJob: "Edit", saved: "Saved.",
@@ -169,7 +169,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     allStatuses: "全部状态",
     loading: "加载中...", jobDetail: "作业详情",
     status: "状态", originalFile: "原始文件", entryCmd: "入口命令",
-    maxRuntimeLabel: "最大运行时长", scheduledUtc: "计划时间 (UTC)",
+    maxRuntimeLabel: "最大运行时长", scheduledUtc: "计划时间",
     started: "开始时间", finished: "结束时间", outputs: "产物数量", s3Prefix: "S3 路径",
     cancelJob: "取消作业", cancelConfirm: "确定取消此作业？",
     editJob: "修改", saved: "已保存。",
@@ -271,6 +271,7 @@ let gpuDefault = 0;
 let cpuQuota = 8;
 let memQuota = 32;
 let gpuTimer: ReturnType<typeof setInterval> | null = null;
+let modalLogTimer: ReturnType<typeof setInterval> | null = null;
 let adminViewActive = false;
 let adminTab: 'users' | 'params' | 'logs' | 'monitor' = 'users';
 let logsPage = 0;
@@ -835,7 +836,7 @@ function renderJobs(): void {
           </div>
         </div>
         <span class="status status-${j.status}">${statusLabel(j.status)}</span>
-        ${j.status === 'running' || (isAdmin && j.status === 'initializing') ? '' : `<button class="btn-delete-card" data-delete-id="${j.id}" title="${t('deleteJob')}">✕</button>`}
+        ${(!isAdmin && j.status === 'running') || (isAdmin && j.status === 'initializing') ? '' : `<button class="btn-delete-card" data-delete-id="${j.id}" title="${t('deleteJob')}">✕</button>`}
       </div>`;
   }).join('');
 }
@@ -915,6 +916,17 @@ async function openModal(jobId: string): Promise<void> {
   }
 
   body.innerHTML = html;
+
+  if (modalLogTimer) { clearInterval(modalLogTimer); modalLogTimer = null; }
+  if (job.status === 'running') {
+    modalLogTimer = setInterval(async () => {
+      const r = await fetch(`${API}/${jobId}/logs`);
+      if (!r.ok) return;
+      const l: string = (await r.json()).logs;
+      const box = document.querySelector('.log-box');
+      if (box) box.innerHTML = l ? ansiToHtml(l) : `<span style="color:var(--text-dim)">${t('noLogs')}</span>`;
+    }, 5000);
+  }
 }
 
 // ── Change password ──────────────────────────
@@ -1009,6 +1021,7 @@ async function saveEdit(e: SubmitEvent): Promise<void> {
 }
 
 function closeModal(): void {
+  if (modalLogTimer) { clearInterval(modalLogTimer); modalLogTimer = null; }
   $('modal').classList.remove('open');
 }
 

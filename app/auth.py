@@ -1,6 +1,6 @@
 import secrets
 import hashlib
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 from fastapi import Cookie, HTTPException, Depends
 

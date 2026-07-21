@@ -1,4 +1,3 @@
-import io
 import socket
 
 import pytest
@@ -21,6 +20,7 @@ pytestmark = pytest.mark.skipif(not _s3_reachable(), reason="S3 unreachable")
 def client():
     from app.main import app
     from fastapi.testclient import TestClient
+
     with TestClient(app) as c:
         yield c
 
@@ -38,6 +38,7 @@ def normal_client(admin_client):
     cookie doesn't clobber admin's (lifespan is re-entrant on the scheduler)."""
     from app.main import app
     from fastapi.testclient import TestClient
+
     with TestClient(app) as c:
         c.post("/api/auth/register", data={"username": "normie", "password": "pass123"})
         yield c
@@ -79,7 +80,9 @@ class TestUserManagement:
     def test_promote_user(self, admin_client, normal_client):
         users = admin_client.get("/api/admin/users").json()
         normie = [u for u in users if u["username"] == "normie"][0]
-        resp = admin_client.patch(f"/api/admin/users/{normie['id']}", json={"is_admin": 1})
+        resp = admin_client.patch(
+            f"/api/admin/users/{normie['id']}", json={"is_admin": 1}
+        )
         assert resp.status_code == 200
         users = admin_client.get("/api/admin/users").json()
         normie = [u for u in users if u["username"] == "normie"][0]
@@ -88,9 +91,10 @@ class TestUserManagement:
     def test_set_quota_override(self, admin_client, normal_client):
         users = admin_client.get("/api/admin/users").json()
         normie = [u for u in users if u["username"] == "normie"][0]
-        resp = admin_client.patch(f"/api/admin/users/{normie['id']}", json={
-            "gpu_quota_override": 4, "storage_quota_override_gb": 25.0
-        })
+        resp = admin_client.patch(
+            f"/api/admin/users/{normie['id']}",
+            json={"gpu_quota_override": 4, "storage_quota_override_gb": 25.0},
+        )
         assert resp.status_code == 200
         users = admin_client.get("/api/admin/users").json()
         normie = [u for u in users if u["username"] == "normie"][0]
@@ -100,8 +104,12 @@ class TestUserManagement:
     def test_clear_quota_override(self, admin_client, normal_client):
         users = admin_client.get("/api/admin/users").json()
         normie = [u for u in users if u["username"] == "normie"][0]
-        admin_client.patch(f"/api/admin/users/{normie['id']}", json={"gpu_quota_override": 4})
-        admin_client.patch(f"/api/admin/users/{normie['id']}", json={"gpu_quota_override": None})
+        admin_client.patch(
+            f"/api/admin/users/{normie['id']}", json={"gpu_quota_override": 4}
+        )
+        admin_client.patch(
+            f"/api/admin/users/{normie['id']}", json={"gpu_quota_override": None}
+        )
         users = admin_client.get("/api/admin/users").json()
         normie = [u for u in users if u["username"] == "normie"][0]
         assert normie["gpu_quota_override"] is None
@@ -109,7 +117,9 @@ class TestUserManagement:
     def test_cannot_remove_self_admin(self, admin_client):
         users = admin_client.get("/api/admin/users").json()
         admin_user = [u for u in users if u["username"] == "admin"][0]
-        resp = admin_client.patch(f"/api/admin/users/{admin_user['id']}", json={"is_admin": 0})
+        resp = admin_client.patch(
+            f"/api/admin/users/{admin_user['id']}", json={"is_admin": 0}
+        )
         assert resp.status_code == 403
 
     def test_cannot_delete_self(self, admin_client):
@@ -151,11 +161,14 @@ class TestSystemParams:
         assert params["gpu_default_quota"] == 8
 
     def test_update_time_window(self, admin_client):
-        admin_client.put("/api/admin/params", json={
-            "time_window_start": "09:00",
-            "time_window_end": "17:00",
-            "time_window_repeat": "weekdays",
-        })
+        admin_client.put(
+            "/api/admin/params",
+            json={
+                "time_window_start": "09:00",
+                "time_window_end": "17:00",
+                "time_window_repeat": "weekdays",
+            },
+        )
         params = admin_client.get("/api/admin/params").json()
         assert params["time_window_start"] == "09:00"
         assert params["time_window_repeat"] == "weekdays"
@@ -168,7 +181,9 @@ class TestSystemParams:
         assert params["gpu_devices"][0]["enabled"] is False
 
     def test_reject_invalid_gpu_devices(self, admin_client):
-        resp = admin_client.put("/api/admin/params", json={"gpu_devices": [{"name": "A100"}]})
+        resp = admin_client.put(
+            "/api/admin/params", json={"gpu_devices": [{"name": "A100"}]}
+        )
         assert resp.status_code == 400
 
     def test_reject_unknown_param(self, admin_client):
@@ -176,7 +191,9 @@ class TestSystemParams:
         assert resp.status_code == 400
 
     def test_reject_invalid_repeat(self, admin_client):
-        resp = admin_client.put("/api/admin/params", json={"time_window_repeat": "monthly"})
+        resp = admin_client.put(
+            "/api/admin/params", json={"time_window_repeat": "monthly"}
+        )
         assert resp.status_code == 400
 
     def test_non_admin_cannot_access_params(self, normal_client):
@@ -195,6 +212,7 @@ class TestSystemLogs:
 
     def test_filter_by_level(self, admin_client):
         from app import db
+
         db.log_event("ERROR", "system", "test error")
         resp = admin_client.get("/api/admin/logs?level=ERROR")
         logs = resp.json()["logs"]
@@ -202,6 +220,7 @@ class TestSystemLogs:
 
     def test_filter_by_category(self, admin_client):
         from app import db
+
         db.log_event("INFO", "job", "test job log")
         resp = admin_client.get("/api/admin/logs?category=job")
         logs = resp.json()["logs"]
@@ -209,6 +228,7 @@ class TestSystemLogs:
 
     def test_pagination(self, admin_client):
         from app import db
+
         for i in range(15):
             db.log_event("INFO", "system", f"bulk msg {i}")
         resp = admin_client.get("/api/admin/logs?limit=5&offset=0")
@@ -236,7 +256,14 @@ class TestMonitoring:
         assert "total_size_bytes" in data["s3"]
 
     def test_monitoring_job_counts(self, admin_client):
-        admin_client.post("/api/jobs", data={"name": "job1", "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE})
+        admin_client.post(
+            "/api/jobs",
+            data={
+                "name": "job1",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": FUTURE,
+            },
+        )
         resp = admin_client.get("/api/admin/monitoring")
         assert resp.json()["jobs"]["pending"] >= 1
 
@@ -246,7 +273,10 @@ class TestMonitoring:
 
 class TestAdminJobManagement:
     def _submit(self, client, name):
-        r = client.post("/api/jobs", data={"name": name, "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE})
+        r = client.post(
+            "/api/jobs",
+            data={"name": name, "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE},
+        )
         assert r.status_code == 200
         return r.json()["id"]
 
@@ -259,7 +289,9 @@ class TestAdminJobManagement:
 
     def test_admin_edit_pending(self, admin_client, normal_client):
         job_id = self._submit(normal_client, "user job")
-        r = admin_client.patch(f"/api/admin/jobs/{job_id}", data={"name": "renamed", "gpus": "1"})
+        r = admin_client.patch(
+            f"/api/admin/jobs/{job_id}", data={"name": "renamed", "gpus": "1"}
+        )
         assert r.status_code == 200
         assert r.json()["name"] == "renamed"
 
@@ -267,7 +299,7 @@ class TestAdminJobManagement:
         job_id = self._submit(normal_client, "user job")
         r = admin_client.delete(f"/api/admin/jobs/{job_id}")
         assert r.status_code == 200
-        assert admin_client.get(f"/api/admin/jobs").json()[0]["status"] == "cancelled"
+        assert admin_client.get("/api/admin/jobs").json()[0]["status"] == "cancelled"
 
     def test_admin_delete_terminal_job(self, admin_client, normal_client):
         job_id = self._submit(normal_client, "user job")
@@ -282,36 +314,87 @@ class TestAdminJobManagement:
         c = self._submit(normal_client, "C")
         r = admin_client.post("/api/admin/jobs/reorder", json={"ids": [c, a, b]})
         assert r.status_code == 200
-        times = {j["name"]: j["scheduled_at"] for j in admin_client.get("/api/admin/jobs").json()}
+        times = {
+            j["name"]: j["scheduled_at"]
+            for j in admin_client.get("/api/admin/jobs").json()
+        }
         assert times["C"] < times["A"] < times["B"]
 
     def test_non_admin_forbidden(self, normal_client):
         assert normal_client.get("/api/admin/jobs").status_code == 403
-        assert normal_client.post("/api/admin/jobs/reorder", json={"ids": ["x"]}).status_code == 403
+        assert (
+            normal_client.post(
+                "/api/admin/jobs/reorder", json={"ids": ["x"]}
+            ).status_code
+            == 403
+        )
 
 
 class TestTimeWindowEnforcement:
     def test_job_outside_window_gets_queued(self, admin_client, normal_client):
-        admin_client.put("/api/admin/params", json={
-            "time_window_start": "09:00", "time_window_end": "17:00", "time_window_repeat": "daily"
-        })
-        resp = normal_client.post("/api/jobs", data={"name": "night job", "image": "ddp-cuda-ssh:latest", "scheduled_at": "2099-01-01T22:00"})
+        admin_client.put(
+            "/api/admin/params",
+            json={
+                "time_window_start": "09:00",
+                "time_window_end": "17:00",
+                "time_window_repeat": "daily",
+            },
+        )
+        resp = normal_client.post(
+            "/api/jobs",
+            data={
+                "name": "night job",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": "2099-01-01T22:00",
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["queued"] is True
 
     def test_admin_bypasses_window(self, admin_client, normal_client):
-        admin_client.put("/api/admin/params", json={
-            "time_window_start": "09:00", "time_window_end": "17:00", "time_window_repeat": "daily"
-        })
-        r_admin = admin_client.post("/api/jobs", data={"name": "a", "image": "ddp-cuda-ssh:latest", "scheduled_at": "2099-01-01T22:00"})
+        admin_client.put(
+            "/api/admin/params",
+            json={
+                "time_window_start": "09:00",
+                "time_window_end": "17:00",
+                "time_window_repeat": "daily",
+            },
+        )
+        r_admin = admin_client.post(
+            "/api/jobs",
+            data={
+                "name": "a",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": "2099-01-01T22:00",
+            },
+        )
         assert r_admin.json()["queued"] is False
-        r_user = normal_client.post("/api/jobs", data={"name": "b", "image": "ddp-cuda-ssh:latest", "scheduled_at": "2099-01-01T22:00"})
+        r_user = normal_client.post(
+            "/api/jobs",
+            data={
+                "name": "b",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": "2099-01-01T22:00",
+            },
+        )
         assert r_user.json()["queued"] is True
 
     def test_job_inside_window_normal(self, admin_client):
-        admin_client.put("/api/admin/params", json={
-            "time_window_start": "00:00", "time_window_end": "23:59", "time_window_repeat": "daily"
-        })
-        resp = admin_client.post("/api/jobs", data={"name": "anytime", "image": "ddp-cuda-ssh:latest", "scheduled_at": "2099-06-15T12:00"})
+        admin_client.put(
+            "/api/admin/params",
+            json={
+                "time_window_start": "00:00",
+                "time_window_end": "23:59",
+                "time_window_repeat": "daily",
+            },
+        )
+        resp = admin_client.post(
+            "/api/jobs",
+            data={
+                "name": "anytime",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": "2099-06-15T12:00",
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["queued"] is False

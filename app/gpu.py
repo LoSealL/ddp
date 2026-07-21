@@ -31,13 +31,19 @@ def fetch_gpu_status() -> list[dict]:
         uuid = labels.get("device_uuid")
         if not uuid:
             continue
-        g = gpus.setdefault(uuid, {
-            "uuid": uuid,
-            "node": labels.get("node", ""),
-            "index": int(labels.get("device_index", 0)),
-            "type": labels.get("device_type", ""),
-            "mem_total": 0, "mem_used": 0,
-            "cores_total": 0, "cores_used": 0, "shared": 0,
-        })
+        g = gpus.setdefault(
+            uuid,
+            {
+                "uuid": uuid,
+                "node": labels.get("node", ""),
+                "index": int(labels.get("device_index", 0)),
+                "type": labels.get("device_type", ""),
+                "mem_total": 0,
+                "mem_used": 0,
+                "cores_total": 0,
+                "cores_used": 0,
+                "shared": 0,
+            },
+        )
         g[_METRICS[name]] = float(raw_val)
     return sorted(gpus.values(), key=lambda g: (g["node"], g["index"]))

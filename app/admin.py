@@ -13,9 +13,15 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 storage = Storage()
 
 ALLOWED_PARAMS = {
-    "time_window_start", "time_window_end", "time_window_repeat",
-    "gpu_default_quota", "storage_default_quota_gb", "gpu_devices",
-    "tz_offset_hours", "cpu_default_quota", "memory_default_quota_gb",
+    "time_window_start",
+    "time_window_end",
+    "time_window_repeat",
+    "gpu_default_quota",
+    "storage_default_quota_gb",
+    "gpu_devices",
+    "tz_offset_hours",
+    "cpu_default_quota",
+    "memory_default_quota_gb",
 }
 
 
@@ -36,20 +42,28 @@ class UserUpdate(BaseModel):
 
 # ── User Management ─────────────────────────────
 
+
 @router.get("/users")
 async def list_users(user: dict = Depends(auth.require_admin)):
     return db.list_users()
 
 
 @router.patch("/users/{user_id}")
-async def update_user_endpoint(user_id: int, body: UserUpdate, user: dict = Depends(auth.require_admin)):
+async def update_user_endpoint(
+    user_id: int, body: UserUpdate, user: dict = Depends(auth.require_admin)
+):
     target = db.get_user_by_id(user_id)
     if not target:
         raise HTTPException(404, "User not found")
 
     updates = {}
-    for field in ("is_admin", "gpu_quota_override", "storage_quota_override_gb",
-                  "cpu_quota_override", "memory_quota_override_gb"):
+    for field in (
+        "is_admin",
+        "gpu_quota_override",
+        "storage_quota_override_gb",
+        "cpu_quota_override",
+        "memory_quota_override_gb",
+    ):
         val = getattr(body, field)
         if val is not None or field in body.model_fields_set:
             updates[field] = val
@@ -65,8 +79,13 @@ async def update_user_endpoint(user_id: int, body: UserUpdate, user: dict = Depe
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    db.log_event("INFO", "admin", f"User {target['username']} updated",
-                 user_id=user["id"], details=json.dumps(updates))
+    db.log_event(
+        "INFO",
+        "admin",
+        f"User {target['username']} updated",
+        user_id=user["id"],
+        details=json.dumps(updates),
+    )
     return {"ok": True}
 
 
@@ -83,14 +102,20 @@ async def delete_user_endpoint(user_id: int, user: dict = Depends(auth.require_a
     db.delete_user(user_id)
     try:
         from .k8s_executor import K8sExecutor
+
         await K8sExecutor(storage).delete_user_workspace(user_id)
     except Exception as e:
-        db.log_event("WARNING", "admin", f"Workspace cleanup failed for user {user_id}: {e}")
-    db.log_event("WARNING", "admin", f"User {target['username']} deleted", user_id=user["id"])
+        db.log_event(
+            "WARNING", "admin", f"Workspace cleanup failed for user {user_id}: {e}"
+        )
+    db.log_event(
+        "WARNING", "admin", f"User {target['username']} deleted", user_id=user["id"]
+    )
     return {"ok": True}
 
 
 # ── System Parameters ───────────────────────────
+
 
 @router.get("/params")
 async def get_params(user: dict = Depends(auth.require_admin)):
@@ -105,7 +130,9 @@ async def update_params(body: dict, user: dict = Depends(auth.require_admin)):
 
     if "time_window_repeat" in body:
         if body["time_window_repeat"] not in ("daily", "weekly", "weekdays"):
-            raise HTTPException(400, "time_window_repeat must be daily, weekly, or weekdays")
+            raise HTTPException(
+                400, "time_window_repeat must be daily, weekly, or weekdays"
+            )
 
     for key in ("tz_offset_hours", "cpu_default_quota"):
         if key in body:
@@ -115,13 +142,16 @@ async def update_params(body: dict, user: dict = Depends(auth.require_admin)):
                 raise HTTPException(400, f"{key} must be an integer")
     if "memory_default_quota_gb" in body:
         try:
-            body["memory_default_quota_gb"] = str(float(body["memory_default_quota_gb"]))
+            body["memory_default_quota_gb"] = str(
+                float(body["memory_default_quota_gb"])
+            )
         except (TypeError, ValueError):
             raise HTTPException(400, "memory_default_quota_gb must be a number")
 
     if "gpu_devices" in body:
-        if not isinstance(body["gpu_devices"], list) or \
-                not all(isinstance(d, dict) and "uuid" in d for d in body["gpu_devices"]):
+        if not isinstance(body["gpu_devices"], list) or not all(
+            isinstance(d, dict) and "uuid" in d for d in body["gpu_devices"]
+        ):
             raise HTTPException(400, "gpu_devices must be a list of {uuid, enabled}")
 
     for key, value in body.items():
@@ -129,12 +159,18 @@ async def update_params(body: dict, user: dict = Depends(auth.require_admin)):
             value = json.dumps(value)
         db.set_param(key, value, user_id=user["id"])
 
-    db.log_event("INFO", "admin", "System params updated", user_id=user["id"],
-                 details=json.dumps(body))
+    db.log_event(
+        "INFO",
+        "admin",
+        "System params updated",
+        user_id=user["id"],
+        details=json.dumps(body),
+    )
     return {"ok": True}
 
 
 # ── System Logs ─────────────────────────────────
+
 
 @router.get("/logs")
 async def list_admin_logs(
@@ -158,10 +194,22 @@ async def clear_admin_logs(user: dict = Depends(auth.require_admin)):
 
 # ── Monitoring ──────────────────────────────────
 
+
 @router.get("/monitoring")
 async def get_monitoring(user: dict = Depends(auth.require_admin)):
     all_jobs = db.list_jobs()
-    job_counts = {s: 0 for s in ("initializing", "pending", "running", "done", "failed", "timeout", "cancelled")}
+    job_counts = {
+        s: 0
+        for s in (
+            "initializing",
+            "pending",
+            "running",
+            "done",
+            "failed",
+            "timeout",
+            "cancelled",
+        )
+    }
     for job in all_jobs:
         if job["status"] in job_counts:
             job_counts[job["status"]] += 1

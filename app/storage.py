@@ -9,7 +9,6 @@ class Storage:
     """S3-compatible storage (MinIO / AWS S3).
 
     Interface mirrors what the executor and API routes need:
-      upload_file(bucket, key, local_path) -> s3_uri
       upload_bytes(key, data)              -> s3_uri
       list_objects(bucket, prefix)         -> [{key, size, s3_uri}]
       get_object_bytes(key)                -> bytes
@@ -24,7 +23,9 @@ class Storage:
         secret_key: str | None = None,
         bucket: str | None = None,
     ):
-        endpoint_url = endpoint_url or os.environ.get("DDP_S3_ENDPOINT", "http://172.16.50.100:9000")
+        endpoint_url = endpoint_url or os.environ.get(
+            "DDP_S3_ENDPOINT", "http://172.16.50.100:9000"
+        )
         access_key = access_key or os.environ.get("DDP_S3_ACCESS_KEY", "admin")
         secret_key = secret_key or os.environ.get("DDP_S3_SECRET_KEY", "yuanqi,123")
         self.bucket = bucket or os.environ.get("DDP_S3_BUCKET", "ddp")
@@ -44,10 +45,6 @@ class Storage:
             self.s3.head_bucket(Bucket=self.bucket)
         except ClientError:
             self.s3.create_bucket(Bucket=self.bucket)
-
-    def upload_file(self, bucket: str, key: str, local_path) -> str:
-        self.s3.upload_file(str(local_path), bucket, key)
-        return f"s3://{bucket}/{key}"
 
     def upload_bytes(self, key: str, data: bytes) -> str:
         self.s3.upload_fileobj(io.BytesIO(data), self.bucket, key)
@@ -72,11 +69,13 @@ class Storage:
         resp = self.s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
         results = []
         for obj in resp.get("Contents", []):
-            results.append({
-                "key": obj["Key"],
-                "size": obj["Size"],
-                "s3_uri": f"s3://{bucket}/{obj['Key']}",
-            })
+            results.append(
+                {
+                    "key": obj["Key"],
+                    "size": obj["Size"],
+                    "s3_uri": f"s3://{bucket}/{obj['Key']}",
+                }
+            )
         return results
 
     def get_object_bytes(self, key: str) -> bytes:

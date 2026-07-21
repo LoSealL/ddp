@@ -28,10 +28,12 @@ def temp_db(tmp_path, monkeypatch):
 @pytest.fixture
 def make_zip():
     """Factory: create an in-memory zip from {filename: content}."""
+
     def _make(files: dict[str, str]) -> bytes:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for name, content in files.items():
                 zf.writestr(name, content)
         return buf.getvalue()
+
     return _make

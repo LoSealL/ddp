@@ -4,7 +4,7 @@ import uuid
 from urllib.parse import urlparse
 
 import pytest
-from botocore.exceptions import ClientError, ConnectionError as BotoConnectionError
+from botocore.exceptions import ClientError
 
 from app.storage import Storage
 
@@ -43,6 +43,7 @@ def fresh_key():
 
 # ── Connectivity ──────────────────────────────
 
+
 class TestConnectivity:
     def test_connection(self, storage):
         """Can we reach the S3 server and list buckets?"""
@@ -64,6 +65,7 @@ class TestConnectivity:
 
 
 # ── Upload / Download round-trip ──────────────
+
 
 class TestUploadDownload:
     def test_upload_and_get_bytes(self, storage, fresh_key):
@@ -125,6 +127,7 @@ class TestUploadDownload:
 
 
 # ── Error cases ───────────────────────────────
+
 
 class TestErrors:
     def test_get_nonexistent_key(self, storage):

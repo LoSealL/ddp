@@ -34,7 +34,15 @@ class TestJobs:
         return db.create_user("tester", "h", "s")
 
     def _create_job(self, user_id, name="test job"):
-        db.create_job("job-1", user_id, name, "ddp-cuda-ssh:latest", "python main.py", "2026-01-01T00:00:00+00:00", 60)
+        db.create_job(
+            "job-1",
+            user_id,
+            name,
+            "ddp-cuda-ssh:latest",
+            "python main.py",
+            "2026-01-01T00:00:00+00:00",
+            60,
+        )
         return "job-1"
 
     def test_create_and_get(self):
@@ -49,8 +57,24 @@ class TestJobs:
     def test_list_scoped_by_user(self):
         uid_a = db.create_user("userA", "h", "s")
         uid_b = db.create_user("userB", "h", "s")
-        db.create_job("job-a", uid_a, "A's job", "ddp-cuda-ssh:latest", "python a.py", "2026-01-01T00:00:00+00:00", 30)
-        db.create_job("job-b", uid_b, "B's job", "ddp-cuda-ssh:latest", "python b.py", "2026-01-01T00:00:00+00:00", 30)
+        db.create_job(
+            "job-a",
+            uid_a,
+            "A's job",
+            "ddp-cuda-ssh:latest",
+            "python a.py",
+            "2026-01-01T00:00:00+00:00",
+            30,
+        )
+        db.create_job(
+            "job-b",
+            uid_b,
+            "B's job",
+            "ddp-cuda-ssh:latest",
+            "python b.py",
+            "2026-01-01T00:00:00+00:00",
+            30,
+        )
 
         jobs_a = db.list_jobs(uid_a)
         assert len(jobs_a) == 1
@@ -62,8 +86,24 @@ class TestJobs:
 
     def test_list_all(self):
         uid = self._setup_user()
-        db.create_job("j1", uid, "first", "ddp-cuda-ssh:latest", "python a.py", "2026-01-01T00:00:00+00:00", 30)
-        db.create_job("j2", uid, "second", "ddp-cuda-ssh:latest", "python b.py", "2026-01-01T00:00:00+00:00", 30)
+        db.create_job(
+            "j1",
+            uid,
+            "first",
+            "ddp-cuda-ssh:latest",
+            "python a.py",
+            "2026-01-01T00:00:00+00:00",
+            30,
+        )
+        db.create_job(
+            "j2",
+            uid,
+            "second",
+            "ddp-cuda-ssh:latest",
+            "python b.py",
+            "2026-01-01T00:00:00+00:00",
+            30,
+        )
         all_jobs = db.list_jobs()
         assert len(all_jobs) == 2
 
@@ -105,6 +145,7 @@ class TestSystemParams:
     def test_set_param_json(self):
         db.set_param("gpu_devices", '[{"id":0,"name":"GPU-0"}]', user_id=1)
         import json
+
         assert json.loads(db.get_param("gpu_devices"))[0]["name"] == "GPU-0"
 
 
@@ -202,11 +243,19 @@ class TestAdminUserColumns:
 
 def test_repeat_columns_default(tmp_path, monkeypatch):
     from app import db
+
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
     db.init_db()
     db.create_user("u", "h", "s")
-    db.create_job("jid1", user_id=1, name="n", image="img", entry_command="c",
-                  scheduled_at="2099-01-01T00:00", timeout_minutes=5)
+    db.create_job(
+        "jid1",
+        user_id=1,
+        name="n",
+        image="img",
+        entry_command="c",
+        scheduled_at="2099-01-01T00:00",
+        timeout_minutes=5,
+    )
     job = db.get_job("jid1")
     assert job["repeat_type"] == "none"
     assert job["repeat_weekdays"] is None
@@ -214,12 +263,21 @@ def test_repeat_columns_default(tmp_path, monkeypatch):
 
 def test_create_job_with_repeat(tmp_path, monkeypatch):
     from app import db
+
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
     db.init_db()
     db.create_user("u", "h", "s")
-    db.create_job("jid2", user_id=1, name="n", image="img", entry_command="c",
-                  scheduled_at="2099-01-01T00:00", timeout_minutes=5,
-                  repeat_type="weekly", repeat_weekdays="1,3,5")
+    db.create_job(
+        "jid2",
+        user_id=1,
+        name="n",
+        image="img",
+        entry_command="c",
+        scheduled_at="2099-01-01T00:00",
+        timeout_minutes=5,
+        repeat_type="weekly",
+        repeat_weekdays="1,3,5",
+    )
     job = db.get_job("jid2")
     assert job["repeat_type"] == "weekly"
     assert job["repeat_weekdays"] == "1,3,5"

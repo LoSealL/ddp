@@ -54,6 +54,13 @@ def main():
         except (json.JSONDecodeError, OSError):
             pass
 
+    # tee'd run log lives in the workspace pvc — survives pod deletion
+    tee_log = os.path.join(WORK, ".ddp-logs", f"{JOB_ID}.log")
+    if os.path.isfile(tee_log):
+        with open(tee_log, "rb") as f:
+            s3.upload_fileobj(f, BUCKET, f"jobs/{JOB_ID}/logs/run.log")
+        print("[ddp] uploaded run log", flush=True)
+
     print(f"[ddp] collected {count} output(s)", flush=True)
     return 0
 

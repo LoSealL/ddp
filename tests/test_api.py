@@ -1,4 +1,3 @@
-import io
 import socket
 
 import pytest
@@ -9,6 +8,7 @@ FUTURE = "2099-01-01T00:00"
 def _s3_reachable(timeout=3):
     from urllib.parse import urlparse
     import os
+
     u = urlparse(os.environ.get("DDP_S3_ENDPOINT", "http://172.16.50.100:9000"))
     try:
         with socket.create_connection((u.hostname, u.port or 80), timeout=timeout):
@@ -24,6 +24,7 @@ pytestmark = pytest.mark.skipif(not _s3_reachable(), reason="S3 unreachable")
 def client():
     from app.main import app
     from fastapi.testclient import TestClient
+
     with TestClient(app) as c:
         yield c
 
@@ -37,7 +38,12 @@ def authed_client(client):
 def _submit_job(client, make_zip=None, name="test job"):
     resp = client.post(
         "/api/jobs",
-        data={"name": name, "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE, "timeout_minutes": "5"},
+        data={
+            "name": name,
+            "image": "ddp-cuda-ssh:latest",
+            "scheduled_at": FUTURE,
+            "timeout_minutes": "5",
+        },
     )
     assert resp.status_code == 200
     return resp.json()["id"]
@@ -45,35 +51,52 @@ def _submit_job(client, make_zip=None, name="test job"):
 
 # ── Auth ──────────────────────────────────────
 
+
 class TestAuth:
     def test_register_sets_cookie(self, client):
-        resp = client.post("/api/auth/register", data={"username": "newuser", "password": "pass123"})
+        resp = client.post(
+            "/api/auth/register", data={"username": "newuser", "password": "pass123"}
+        )
         assert resp.status_code == 200
         assert resp.json()["username"] == "newuser"
         assert "session" in resp.cookies
 
     def test_register_duplicate(self, authed_client):
-        resp = authed_client.post("/api/auth/register", data={"username": "alice", "password": "pass123"})
+        resp = authed_client.post(
+            "/api/auth/register", data={"username": "alice", "password": "pass123"}
+        )
         assert resp.status_code == 409
 
     def test_register_short_username(self, client):
-        resp = client.post("/api/auth/register", data={"username": "a", "password": "pass123"})
+        resp = client.post(
+            "/api/auth/register", data={"username": "a", "password": "pass123"}
+        )
         assert resp.status_code == 400
 
     def test_register_short_password(self, client):
-        resp = client.post("/api/auth/register", data={"username": "bob", "password": "12345"})
+        resp = client.post(
+            "/api/auth/register", data={"username": "bob", "password": "12345"}
+        )
         assert resp.status_code == 400
 
     def test_login_success(self, client):
-        client.post("/api/auth/register", data={"username": "charlie", "password": "pass123"})
+        client.post(
+            "/api/auth/register", data={"username": "charlie", "password": "pass123"}
+        )
         client.post("/api/auth/logout")
-        resp = client.post("/api/auth/login", data={"username": "charlie", "password": "pass123"})
+        resp = client.post(
+            "/api/auth/login", data={"username": "charlie", "password": "pass123"}
+        )
         assert resp.status_code == 200
 
     def test_login_wrong_password(self, client):
-        client.post("/api/auth/register", data={"username": "dave", "password": "pass123"})
+        client.post(
+            "/api/auth/register", data={"username": "dave", "password": "pass123"}
+        )
         client.post("/api/auth/logout")
-        resp = client.post("/api/auth/login", data={"username": "dave", "password": "wrong"})
+        resp = client.post(
+            "/api/auth/login", data={"username": "dave", "password": "wrong"}
+        )
         assert resp.status_code == 401
 
     def test_me_requires_auth(self, client):
@@ -86,15 +109,33 @@ class TestAuth:
         assert resp.json()["username"] == "alice"
 
     def test_change_password(self, client):
-        client.post("/api/auth/register", data={"username": "pwuser", "password": "oldpass1"})
-        r = client.post("/api/auth/password", data={"old_password": "oldpass1", "new_password": "newpass2"})
+        client.post(
+            "/api/auth/register", data={"username": "pwuser", "password": "oldpass1"}
+        )
+        r = client.post(
+            "/api/auth/password",
+            data={"old_password": "oldpass1", "new_password": "newpass2"},
+        )
         assert r.status_code == 200
         client.post("/api/auth/logout")
-        assert client.post("/api/auth/login", data={"username": "pwuser", "password": "oldpass1"}).status_code == 401
-        assert client.post("/api/auth/login", data={"username": "pwuser", "password": "newpass2"}).status_code == 200
+        assert (
+            client.post(
+                "/api/auth/login", data={"username": "pwuser", "password": "oldpass1"}
+            ).status_code
+            == 401
+        )
+        assert (
+            client.post(
+                "/api/auth/login", data={"username": "pwuser", "password": "newpass2"}
+            ).status_code
+            == 200
+        )
 
     def test_change_password_wrong_old(self, authed_client):
-        r = authed_client.post("/api/auth/password", data={"old_password": "nope", "new_password": "newpass2"})
+        r = authed_client.post(
+            "/api/auth/password",
+            data={"old_password": "nope", "new_password": "newpass2"},
+        )
         assert r.status_code == 403
 
     def test_logout_clears_session(self, authed_client):
@@ -103,6 +144,7 @@ class TestAuth:
 
 
 # ── Jobs ──────────────────────────────────────
+
 
 class TestJobs:
     def test_submit(self, authed_client, make_zip):
@@ -130,16 +172,24 @@ class TestJobs:
 
     def test_edit_pending(self, authed_client):
         job_id = _submit_job(authed_client)
-        resp = authed_client.patch(f"/api/jobs/{job_id}", data={
-            "name": "renamed", "gpus": "0", "timeout_minutes": "99",
-            "scheduled_at": "2099-03-01T10:00"})
+        resp = authed_client.patch(
+            f"/api/jobs/{job_id}",
+            data={
+                "name": "renamed",
+                "gpus": "0",
+                "timeout_minutes": "99",
+                "scheduled_at": "2099-03-01T10:00",
+            },
+        )
         assert resp.status_code == 200
         job = resp.json()
         assert job["name"] == "renamed"
         assert job["timeout_minutes"] == 99
         from datetime import datetime, timezone
-        assert datetime.fromisoformat(job["scheduled_at"]) == \
-            datetime.fromisoformat("2099-03-01T10:00").astimezone(timezone.utc)
+
+        assert datetime.fromisoformat(job["scheduled_at"]) == datetime.fromisoformat(
+            "2099-03-01T10:00"
+        ).astimezone(timezone.utc)
 
     def test_edit_non_pending_rejected(self, authed_client):
         job_id = _submit_job(authed_client)
@@ -164,8 +214,12 @@ class TestJobs:
     def test_cpu_quota_reject(self, authed_client):
         resp = authed_client.post(
             "/api/jobs",
-            data={"name": "fat", "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE,
-                  "cpu": "999"},
+            data={
+                "name": "fat",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": FUTURE,
+                "cpu": "999",
+            },
         )
         assert resp.status_code == 403
         assert "CPU quota" in resp.json()["detail"]
@@ -173,8 +227,12 @@ class TestJobs:
     def test_memory_quota_reject(self, authed_client):
         resp = authed_client.post(
             "/api/jobs",
-            data={"name": "fat", "image": "ddp-cuda-ssh:latest", "scheduled_at": FUTURE,
-                  "memory_gb": "999"},
+            data={
+                "name": "fat",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": FUTURE,
+                "memory_gb": "999",
+            },
         )
         assert resp.status_code == 403
         assert "Memory quota" in resp.json()["detail"]
@@ -189,16 +247,22 @@ class TestJobs:
     def test_user_isolation(self, authed_client, client, make_zip):
         job_id = _submit_job(authed_client, make_zip)
         # Register as different user
-        client.post("/api/auth/register", data={"username": "eve", "password": "pass123"})
+        client.post(
+            "/api/auth/register", data={"username": "eve", "password": "pass123"}
+        )
         # Eve can't see Alice's job
         assert client.get(f"/api/jobs/{job_id}").status_code == 404
-        assert client.get(f"/api/jobs").json() == []
+        assert client.get("/api/jobs").json() == []
 
     def test_submit_weekly_without_weekdays_rejected(self, authed_client):
         resp = authed_client.post(
             "/api/jobs",
-            data={"name": "wk", "image": "ddp-cuda-ssh:latest",
-                  "scheduled_at": FUTURE, "repeat_type": "weekly"},
+            data={
+                "name": "wk",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": FUTURE,
+                "repeat_type": "weekly",
+            },
         )
         assert resp.status_code == 400
         assert "weekday" in resp.json()["detail"].lower()
@@ -206,18 +270,26 @@ class TestJobs:
     def test_submit_weekly_bad_weekday_rejected(self, authed_client):
         resp = authed_client.post(
             "/api/jobs",
-            data={"name": "wk", "image": "ddp-cuda-ssh:latest",
-                  "scheduled_at": FUTURE, "repeat_type": "weekly",
-                  "repeat_weekdays": ["1", "8"]},
+            data={
+                "name": "wk",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": FUTURE,
+                "repeat_type": "weekly",
+                "repeat_weekdays": ["1", "8"],
+            },
         )
         assert resp.status_code == 400
 
     def test_submit_weekly_ok(self, authed_client):
         resp = authed_client.post(
             "/api/jobs",
-            data={"name": "wk", "image": "ddp-cuda-ssh:latest",
-                  "scheduled_at": FUTURE, "repeat_type": "weekly",
-                  "repeat_weekdays": ["1", "3", "5"]},
+            data={
+                "name": "wk",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": FUTURE,
+                "repeat_type": "weekly",
+                "repeat_weekdays": ["1", "3", "5"],
+            },
         )
         assert resp.status_code == 200
         job_id = resp.json()["id"]
@@ -228,9 +300,13 @@ class TestJobs:
     def test_submit_daily_clears_weekdays(self, authed_client):
         resp = authed_client.post(
             "/api/jobs",
-            data={"name": "daily", "image": "ddp-cuda-ssh:latest",
-                  "scheduled_at": FUTURE, "repeat_type": "daily",
-                  "repeat_weekdays": ["1", "2"]},
+            data={
+                "name": "daily",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": FUTURE,
+                "repeat_type": "daily",
+                "repeat_weekdays": ["1", "2"],
+            },
         )
         assert resp.status_code == 200
         job = authed_client.get(f"/api/jobs/{resp.json()['id']}").json()
@@ -240,27 +316,34 @@ class TestJobs:
     def test_submit_bad_repeat_type_rejected(self, authed_client):
         resp = authed_client.post(
             "/api/jobs",
-            data={"name": "x", "image": "ddp-cuda-ssh:latest",
-                  "scheduled_at": FUTURE, "repeat_type": "monthly"},
+            data={
+                "name": "x",
+                "image": "ddp-cuda-ssh:latest",
+                "scheduled_at": FUTURE,
+                "repeat_type": "monthly",
+            },
         )
         assert resp.status_code == 400
 
     def test_edit_repeat_type(self, authed_client):
         job_id = _submit_job(authed_client)
-        resp = authed_client.patch(f"/api/jobs/{job_id}", data={
-            "repeat_type": "daily"})
+        resp = authed_client.patch(f"/api/jobs/{job_id}", data={"repeat_type": "daily"})
         assert resp.status_code == 200
         assert resp.json()["repeat_type"] == "daily"
 
 
 # ── S3-backed endpoints ───────────────────────
 
+
 class TestS3Endpoints:
     def _setup_job_with_s3_data(self, authed_client, make_zip):
         """Submit a job, then inject S3 data (logs + outputs)."""
         from app.main import storage
+
         job_id = _submit_job(authed_client, make_zip)
-        storage.upload_bytes(f"jobs/{job_id}/logs/run.log", b"=== python main.py ===\nhello world\n")
+        storage.upload_bytes(
+            f"jobs/{job_id}/logs/run.log", b"=== python main.py ===\nhello world\n"
+        )
         storage.upload_bytes(f"jobs/{job_id}/output/result.txt", b"result data")
         storage.upload_bytes(f"jobs/{job_id}/output/data/final.csv", b"a,b,c\n1,2,3")
         return job_id

@@ -1,8 +1,6 @@
 import json
-import os
 import sqlite3
 import time
-import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -96,49 +94,24 @@ def init_db():
             details     TEXT
         )
     """)
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN user_id INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN gpus INTEGER NOT NULL DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN gpu_mem_mb INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    for col, ddl in [("image", "TEXT"), ("ssh_port", "INTEGER"), ("ssh_password", "TEXT")]:
-        try:
-            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
-        except sqlite3.OperationalError:
-            pass
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN output_path TEXT NOT NULL DEFAULT 'output'")
-    except sqlite3.OperationalError:
-        pass
-    for ddl in ["ALTER TABLE jobs ADD COLUMN cpu REAL NOT NULL DEFAULT 2",
-                "ALTER TABLE jobs ADD COLUMN memory_gb REAL NOT NULL DEFAULT 4",
-                "ALTER TABLE users ADD COLUMN cpu_quota_override REAL",
-                "ALTER TABLE users ADD COLUMN memory_quota_override_gb REAL"]:
-        try:
-            conn.execute(ddl)
-        except sqlite3.OperationalError:
-            pass
-    try:
-        conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        conn.execute("ALTER TABLE users ADD COLUMN gpu_quota_override INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        conn.execute("ALTER TABLE users ADD COLUMN storage_quota_override_gb REAL")
-    except sqlite3.OperationalError:
-        pass
-    for ddl in ["ALTER TABLE jobs ADD COLUMN repeat_type TEXT NOT NULL DEFAULT 'none'",
-                "ALTER TABLE jobs ADD COLUMN repeat_weekdays TEXT"]:
+    for ddl in [
+        "ALTER TABLE jobs ADD COLUMN user_id INTEGER",
+        "ALTER TABLE jobs ADD COLUMN gpus INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE jobs ADD COLUMN gpu_mem_mb INTEGER",
+        "ALTER TABLE jobs ADD COLUMN image TEXT",
+        "ALTER TABLE jobs ADD COLUMN ssh_port INTEGER",
+        "ALTER TABLE jobs ADD COLUMN ssh_password TEXT",
+        "ALTER TABLE jobs ADD COLUMN output_path TEXT NOT NULL DEFAULT 'output'",
+        "ALTER TABLE jobs ADD COLUMN cpu REAL NOT NULL DEFAULT 2",
+        "ALTER TABLE jobs ADD COLUMN memory_gb REAL NOT NULL DEFAULT 4",
+        "ALTER TABLE jobs ADD COLUMN repeat_type TEXT NOT NULL DEFAULT 'none'",
+        "ALTER TABLE jobs ADD COLUMN repeat_weekdays TEXT",
+        "ALTER TABLE users ADD COLUMN cpu_quota_override REAL",
+        "ALTER TABLE users ADD COLUMN memory_quota_override_gb REAL",
+        "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN gpu_quota_override INTEGER",
+        "ALTER TABLE users ADD COLUMN storage_quota_override_gb REAL",
+    ]:
         try:
             conn.execute(ddl)
         except sqlite3.OperationalError:
@@ -164,20 +137,55 @@ def init_db():
     conn.close()
 
 
-def create_job(job_id, user_id, name, image, entry_command, scheduled_at, timeout_minutes,
-               gpus=0, gpu_mem_mb=None, ssh_port=None, ssh_password=None, status="pending",
-               output_path="output", cpu=2, memory_gb=4,
-               repeat_type="none", repeat_weekdays=None):
+def create_job(
+    job_id,
+    user_id,
+    name,
+    image,
+    entry_command,
+    scheduled_at,
+    timeout_minutes,
+    gpus=0,
+    gpu_mem_mb=None,
+    ssh_port=None,
+    ssh_password=None,
+    status="pending",
+    output_path="output",
+    cpu=2,
+    memory_gb=4,
+    repeat_type="none",
+    repeat_weekdays=None,
+):
     now = now_iso()
     conn = get_db()
-    conn.execute("""
+    conn.execute(
+        """
         INSERT INTO jobs (id, user_id, name, filename, image, entry_command, scheduled_at, timeout_minutes,
                           gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, cpu, memory_gb,
                           repeat_type, repeat_weekdays, created_at)
         VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (job_id, user_id, name, image, entry_command, scheduled_at, timeout_minutes,
-          gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, cpu, memory_gb,
-          repeat_type, repeat_weekdays, now))
+    """,
+        (
+            job_id,
+            user_id,
+            name,
+            image,
+            entry_command,
+            scheduled_at,
+            timeout_minutes,
+            gpus,
+            gpu_mem_mb,
+            ssh_port,
+            ssh_password,
+            status,
+            output_path,
+            cpu,
+            memory_gb,
+            repeat_type,
+            repeat_weekdays,
+            now,
+        ),
+    )
     conn.commit()
     conn.close()
 
@@ -192,7 +200,9 @@ def get_job(job_id):
 def list_jobs(user_id=None):
     conn = get_db()
     if user_id is not None:
-        rows = conn.execute("SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC", (user_id,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC", (user_id,)
+        ).fetchall()
     else:
         rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC").fetchall()
     conn.close()
@@ -216,6 +226,7 @@ def delete_job(job_id):
 
 
 # ── Users & Sessions ─────────────────────────────────
+
 
 def create_user(username, password_hash, salt):
     now = now_iso()
@@ -258,11 +269,14 @@ def create_session(token, user_id, expires_at):
 
 def get_user_by_session(token):
     conn = get_db()
-    row = conn.execute("""
+    row = conn.execute(
+        """
         SELECT u.id, u.username, u.is_admin FROM users u
         JOIN sessions s ON u.id = s.user_id
         WHERE s.token = ? AND s.expires_at > ?
-    """, (token, now_iso())).fetchone()
+    """,
+        (token, now_iso()),
+    ).fetchone()
     conn.close()
     return dict(row) if row else None
 
@@ -276,6 +290,7 @@ def delete_session(token):
 
 # ── Admin: Users ──────────────────────────────────────
 
+
 def list_users():
     conn = get_db()
     rows = conn.execute("""
@@ -287,8 +302,13 @@ def list_users():
     return [dict(r) for r in rows]
 
 
-_ALLOWED_USER_COLS = {"is_admin", "gpu_quota_override", "storage_quota_override_gb",
-                      "cpu_quota_override", "memory_quota_override_gb"}
+_ALLOWED_USER_COLS = {
+    "is_admin",
+    "gpu_quota_override",
+    "storage_quota_override_gb",
+    "cpu_quota_override",
+    "memory_quota_override_gb",
+}
 
 
 def update_user(user_id, **kwargs):
@@ -313,8 +333,10 @@ def delete_user(user_id):
 
 def update_user_password(user_id, password_hash, salt):
     conn = get_db()
-    conn.execute("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
-                 (password_hash, salt, user_id))
+    conn.execute(
+        "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
+        (password_hash, salt, user_id),
+    )
     conn.commit()
     conn.close()
 
@@ -328,17 +350,23 @@ def count_admins():
 
 # ── Admin: System Params ──────────────────────────────
 
+_INT_PARAMS = {"gpu_default_quota", "tz_offset_hours", "cpu_default_quota"}
+_FLOAT_PARAMS = {"storage_default_quota_gb", "memory_default_quota_gb"}
+
+
+def _coerce_param(key, value):
+    if key in _INT_PARAMS:
+        return int(value)
+    if key in _FLOAT_PARAMS:
+        return float(value)
+    return value
+
+
 def get_all_params():
     conn = get_db()
     rows = conn.execute("SELECT key, value FROM system_params").fetchall()
     conn.close()
-    params = {r["key"]: r["value"] for r in rows}
-    for key in ("gpu_default_quota", "tz_offset_hours", "cpu_default_quota"):
-        if key in params:
-            params[key] = int(params[key])
-    for key in ("storage_default_quota_gb", "memory_default_quota_gb"):
-        if key in params:
-            params[key] = float(params[key])
+    params = {r["key"]: _coerce_param(r["key"], r["value"]) for r in rows}
     if "gpu_devices" in params:
         params["gpu_devices"] = json.loads(params["gpu_devices"])
     return params
@@ -346,47 +374,49 @@ def get_all_params():
 
 def get_param(key):
     conn = get_db()
-    row = conn.execute("SELECT value FROM system_params WHERE key = ?", (key,)).fetchone()
+    row = conn.execute(
+        "SELECT value FROM system_params WHERE key = ?", (key,)
+    ).fetchone()
     conn.close()
     if not row:
         return None
-    value = row["value"]
-    if key in ("gpu_default_quota", "tz_offset_hours", "cpu_default_quota"):
-        return int(value)
-    if key in ("storage_default_quota_gb", "memory_default_quota_gb"):
-        return float(value)
-    return value
+    return _coerce_param(key, row["value"])
 
 
 def set_param(key, value, user_id=None):
     now = now_iso()
     conn = get_db()
-    conn.execute("""
+    conn.execute(
+        """
         INSERT INTO system_params (key, value, updated_at, updated_by)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by
-    """, (key, value, now, user_id))
+    """,
+        (key, value, now, user_id),
+    )
     conn.commit()
     conn.close()
 
 
 # ── Admin: System Logs ────────────────────────────────
 
+
 def log_event(level, category, message, user_id=None, details=None):
     now = now_iso()
     conn = get_db()
-    conn.execute("""
+    conn.execute(
+        """
         INSERT INTO system_logs (timestamp, level, category, message, user_id, details)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (now, level, category, message, user_id, details))
+    """,
+        (now, level, category, message, user_id, details),
+    )
     conn.commit()
     conn.close()
 
 
-def list_logs(level=None, category=None, limit=100, offset=0):
-    conn = get_db()
-    clauses = []
-    params = []
+def _log_where(level=None, category=None):
+    clauses, params = [], []
     if level is not None:
         clauses.append("level = ?")
         params.append(level)
@@ -394,10 +424,15 @@ def list_logs(level=None, category=None, limit=100, offset=0):
         clauses.append("category = ?")
         params.append(category)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    params += [limit, offset]
+    return where, params
+
+
+def list_logs(level=None, category=None, limit=100, offset=0):
+    where, params = _log_where(level, category)
+    conn = get_db()
     rows = conn.execute(
         f"SELECT * FROM system_logs{where} ORDER BY id DESC LIMIT ? OFFSET ?",
-        params,
+        params + [limit, offset],
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -411,16 +446,10 @@ def clear_logs():
 
 
 def count_logs(level=None, category=None):
+    where, params = _log_where(level, category)
     conn = get_db()
-    clauses = []
-    params = []
-    if level is not None:
-        clauses.append("level = ?")
-        params.append(level)
-    if category is not None:
-        clauses.append("category = ?")
-        params.append(category)
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    count = conn.execute(f"SELECT COUNT(*) FROM system_logs{where}", params).fetchone()[0]
+    count = conn.execute(f"SELECT COUNT(*) FROM system_logs{where}", params).fetchone()[
+        0
+    ]
     conn.close()
     return count

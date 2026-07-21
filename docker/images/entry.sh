@@ -15,7 +15,10 @@ cd /workspace
 if [ "$POD_MODE" = "run" ]; then
   /usr/sbin/sshd -e
   echo "=== ${ENTRY_COMMAND:-bash} ==="
-  exec bash -lc "${ENTRY_COMMAND:-bash}"
+  # tee into the workspace pvc so logs survive pod deletion (deadline kills)
+  mkdir -p /workspace/.ddp-logs
+  bash -lc "${ENTRY_COMMAND:-bash}" 2>&1 | tee "/workspace/.ddp-logs/${JOB_ID:-unknown}.log"
+  exit "${PIPESTATUS[0]}"
 else
   exec /usr/sbin/sshd -D -e
 fi

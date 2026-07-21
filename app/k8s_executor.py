@@ -1,7 +1,6 @@
 import asyncio
 import os
 import secrets
-from datetime import datetime, timezone
 
 from apscheduler.triggers.date import DateTrigger
 from kubernetes import client, config
@@ -11,17 +10,29 @@ from . import db, gpu, images
 from .storage import Storage
 
 NAMESPACE = os.environ.get("DDP_K8S_NAMESPACE", "ddp")
-RUNNER_IMAGE = os.environ.get("DDP_RUNNER_IMAGE", "172.16.50.3:5000/neospark/ddp-runner:latest")
+RUNNER_IMAGE = os.environ.get(
+    "DDP_RUNNER_IMAGE", "172.16.50.3:5000/neospark/ddp-runner:latest"
+)
 S3_SECRET = "ddp-s3-creds"
 BUCKET = "ddp"
 PROXY = os.environ.get("DDP_POD_PROXY", "http://172.16.50.3:7891")
 
 _GPU_NODE_LABEL = "acceleratable.feature.gpustack.ai/nvidia"
 
-_S3_ENV = [client.V1EnvVar(k, value_from=client.V1EnvVarSource(
-    secret_key_ref=client.V1SecretKeySelector(name=S3_SECRET, key=sk)))
-    for k, sk in [("DDP_S3_ENDPOINT", "endpoint"), ("DDP_S3_ACCESS_KEY", "access_key"),
-                  ("DDP_S3_SECRET_KEY", "secret_key"), ("DDP_S3_BUCKET", "bucket")]]
+_S3_ENV = [
+    client.V1EnvVar(
+        k,
+        value_from=client.V1EnvVarSource(
+            secret_key_ref=client.V1SecretKeySelector(name=S3_SECRET, key=sk)
+        ),
+    )
+    for k, sk in [
+        ("DDP_S3_ENDPOINT", "endpoint"),
+        ("DDP_S3_ACCESS_KEY", "access_key"),
+        ("DDP_S3_SECRET_KEY", "secret_key"),
+        ("DDP_S3_BUCKET", "bucket"),
+    ]
+]
 
 
 class K8sExecutor:
@@ -46,7 +57,11 @@ class K8sExecutor:
         return f"ddp-{job_id}"
 
     def _labels(self, job: dict) -> dict:
-        return {"app": "ddp", "ddp/job-id": job["id"], "ddp/user-id": str(job.get("user_id"))}
+        return {
+            "app": "ddp",
+            "ddp/job-id": job["id"],
+            "ddp/user-id": str(job.get("user_id")),
+        }
 
     def _user_pvc(self, job: dict) -> str:
         return f"ddp-user-{job.get('user_id')}"
@@ -69,64 +84,106 @@ class K8sExecutor:
         # new PVC -> pick the node with the most free GPU memory.
         try:
             pvc_obj = await asyncio.to_thread(
-                self.core.read_namespaced_persistent_volume_claim, pvc_name, NAMESPACE)
-            node = (pvc_obj.metadata.annotations or {}).get("volume.kubernetes.io/selected-node")
-            node_selector = ({"kubernetes.io/hostname": node} if node
-                             else {_GPU_NODE_LABEL: "true"})
+                self.core.read_namespaced_persistent_volume_claim, pvc_name, NAMESPACE
+            )
+            node = (pvc_obj.metadata.annotations or {}).get(
+                "volume.kubernetes.io/selected-node"
+            )
+            node_selector = (
+                {"kubernetes.io/hostname": node} if node else {_GPU_NODE_LABEL: "true"}
+            )
         except ApiException as e:
             if e.status != 404:
                 raise
             node_selector = {_GPU_NODE_LABEL: "true"}
             try:
-                best = max(gpu.fetch_gpu_status(), key=lambda g: g["mem_total"] - g["mem_used"],
-                           default=None)
+                best = max(
+                    gpu.fetch_gpu_status(),
+                    key=lambda g: g["mem_total"] - g["mem_used"],
+                    default=None,
+                )
                 if best:
                     node_selector = {"kubernetes.io/hostname": best["node"]}
             except Exception:
                 pass
             pvc = client.V1PersistentVolumeClaim(
-                metadata=client.V1ObjectMeta(name=pvc_name, namespace=NAMESPACE,
-                                             labels={"app": "ddp", "ddp/user-id": str(job.get("user_id"))}),
+                metadata=client.V1ObjectMeta(
+                    name=pvc_name,
+                    namespace=NAMESPACE,
+                    labels={"app": "ddp", "ddp/user-id": str(job.get("user_id"))},
+                ),
                 spec=client.V1PersistentVolumeClaimSpec(
                     access_modes=["ReadWriteOnce"],
                     resources=client.V1VolumeResourceRequirements(
-                        requests={"storage": f"{job.get('storage_gb') or 10}Gi"})))
+                        requests={"storage": f"{job.get('storage_gb') or 10}Gi"}
+                    ),
+                ),
+            )
             await asyncio.to_thread(
-                self.core.create_namespaced_persistent_volume_claim, NAMESPACE, pvc)
+                self.core.create_namespaced_persistent_volume_claim, NAMESPACE, pvc
+            )
         pod = client.V1Pod(
             metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE, labels=labels),
             spec=client.V1PodSpec(
                 restart_policy="Always",
                 node_selector=node_selector,
-                containers=[client.V1Container(
-                    name="debug",
-                    image=images.pull_spec(job["image"]),
-                    env=[client.V1EnvVar("POD_MODE", "ssh"),
-                         client.V1EnvVar("SSH_PASSWORD", password),
-                         # toolkit mounts driver libs but zero devices -> nvidia-smi shows no GPUs
-                         client.V1EnvVar("NVIDIA_VISIBLE_DEVICES", "void"),
-                         client.V1EnvVar("HTTP_PROXY", PROXY),
-                         client.V1EnvVar("HTTPS_PROXY", PROXY),
-                         client.V1EnvVar("NO_PROXY", "localhost,127.0.0.1,172.16.0.0/16,10.0.0.0/8")],
-                    ports=[client.V1ContainerPort(22)],
-                    resources=client.V1ResourceRequirements(
-                        requests={"cpu": str(job.get("cpu") or 2),
-                                  "memory": f"{job.get('memory_gb') or 4}Gi"},
-                        limits={"cpu": str(job.get("cpu") or 2),
-                                "memory": f"{job.get('memory_gb') or 4}Gi"}),
-                    volume_mounts=[client.V1VolumeMount(name="workspace", mount_path="/workspace")])],
-                volumes=[client.V1Volume(
-                    name="workspace",
-                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(pvc_name))]))
+                containers=[
+                    client.V1Container(
+                        name="debug",
+                        image=images.pull_spec(job["image"]),
+                        env=[
+                            client.V1EnvVar("POD_MODE", "ssh"),
+                            client.V1EnvVar("SSH_PASSWORD", password),
+                            # toolkit mounts driver libs but zero devices -> nvidia-smi shows no GPUs
+                            client.V1EnvVar("NVIDIA_VISIBLE_DEVICES", "void"),
+                            client.V1EnvVar("HTTP_PROXY", PROXY),
+                            client.V1EnvVar("HTTPS_PROXY", PROXY),
+                            client.V1EnvVar(
+                                "NO_PROXY",
+                                "localhost,127.0.0.1,172.16.0.0/16,10.0.0.0/8",
+                            ),
+                        ],
+                        ports=[client.V1ContainerPort(22)],
+                        resources=client.V1ResourceRequirements(
+                            requests={
+                                "cpu": str(job.get("cpu") or 2),
+                                "memory": f"{job.get('memory_gb') or 4}Gi",
+                            },
+                            limits={
+                                "cpu": str(job.get("cpu") or 2),
+                                "memory": f"{job.get('memory_gb') or 4}Gi",
+                            },
+                        ),
+                        volume_mounts=[
+                            client.V1VolumeMount(
+                                name="workspace", mount_path="/workspace"
+                            )
+                        ],
+                    )
+                ],
+                volumes=[
+                    client.V1Volume(
+                        name="workspace",
+                        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                            pvc_name
+                        ),
+                    )
+                ],
+            ),
+        )
         svc = client.V1Service(
             metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE, labels=labels),
             spec=client.V1ServiceSpec(
                 type="NodePort",
                 selector={"ddp/job-id": job_id},
-                ports=[client.V1ServicePort(port=22, target_port=22)]))
+                ports=[client.V1ServicePort(port=22, target_port=22)],
+            ),
+        )
 
         await asyncio.to_thread(self.core.create_namespaced_pod, NAMESPACE, pod)
-        svc_obj = await asyncio.to_thread(self.core.create_namespaced_service, NAMESPACE, svc)
+        svc_obj = await asyncio.to_thread(
+            self.core.create_namespaced_service, NAMESPACE, svc
+        )
         return {"ssh_port": svc_obj.spec.ports[0].node_port, "ssh_password": password}
 
     async def wait_ready(self, job_id: str):
@@ -137,12 +194,15 @@ class K8sExecutor:
             if not job or job["status"] != "initializing":
                 return
             try:
-                pod = await asyncio.to_thread(self.core.read_namespaced_pod, name, NAMESPACE)
+                pod = await asyncio.to_thread(
+                    self.core.read_namespaced_pod, name, NAMESPACE
+                )
                 phase = pod.status.phase
                 if phase == "Running" and pod.status.pod_ip:
                     try:
                         _, w = await asyncio.wait_for(
-                            asyncio.open_connection(pod.status.pod_ip, 22), timeout=3)
+                            asyncio.open_connection(pod.status.pod_ip, 22), timeout=3
+                        )
                         w.close()
                         await w.wait_closed()
                         db.update_job(job_id, status="pending")
@@ -151,25 +211,34 @@ class K8sExecutor:
                     except (OSError, asyncio.TimeoutError):
                         pass
                 elif phase in ("Failed", "Succeeded"):
-                    db.update_job(job_id, status="failed",
-                                  finished_at=db.now_iso(),
-                                  error="debug pod exited before becoming ready")
+                    db.update_job(
+                        job_id,
+                        status="failed",
+                        finished_at=db.now_iso(),
+                        error="debug pod exited before becoming ready",
+                    )
                     return
             except ApiException as e:
                 if e.status == 404:
                     return
                 raise
             await asyncio.sleep(5)
-        db.update_job(job_id, status="failed",
-                      finished_at=db.now_iso(),
-                      error="debug pod did not become ready in time")
+        db.update_job(
+            job_id,
+            status="failed",
+            finished_at=db.now_iso(),
+            error="debug pod did not become ready in time",
+        )
 
     # ── phase 2: scheduled gpu run ──────────────
 
     def _gpu_job(self, job: dict) -> client.V1Job:
         job_id = job["id"]
         name = self._name(job_id)
-        limits = {"cpu": str(job.get("cpu") or 2), "memory": f"{job.get('memory_gb') or 4}Gi"}
+        limits = {
+            "cpu": str(job.get("cpu") or 2),
+            "memory": f"{job.get('memory_gb') or 4}Gi",
+        }
         if job.get("gpus"):
             limits["nvidia.com/gpu"] = job["gpus"]
             if job.get("gpu_mem_mb"):
@@ -177,34 +246,55 @@ class K8sExecutor:
         container = client.V1Container(
             name="runner",
             image=images.pull_spec(job["image"]),
-            env=[client.V1EnvVar("POD_MODE", "run"),
-                 client.V1EnvVar("SSH_PASSWORD", job.get("ssh_password") or "ddp123"),
-                 client.V1EnvVar("ENTRY_COMMAND", job["entry_command"]),
-                 client.V1EnvVar("HTTP_PROXY", PROXY),
-                 client.V1EnvVar("HTTPS_PROXY", PROXY),
-                 client.V1EnvVar("NO_PROXY", "localhost,127.0.0.1,172.16.0.0/16,10.0.0.0/8")],
+            env=[
+                client.V1EnvVar("POD_MODE", "run"),
+                client.V1EnvVar("JOB_ID", job_id),
+                client.V1EnvVar("SSH_PASSWORD", job.get("ssh_password") or "ddp123"),
+                client.V1EnvVar("ENTRY_COMMAND", job["entry_command"]),
+                client.V1EnvVar("HTTP_PROXY", PROXY),
+                client.V1EnvVar("HTTPS_PROXY", PROXY),
+                client.V1EnvVar(
+                    "NO_PROXY", "localhost,127.0.0.1,172.16.0.0/16,10.0.0.0/8"
+                ),
+            ],
             ports=[client.V1ContainerPort(22)],
             resources=client.V1ResourceRequirements(
-                requests={"cpu": str(job.get("cpu") or 2),
-                          "memory": f"{job.get('memory_gb') or 4}Gi"},
-                limits=limits),
-            volume_mounts=[client.V1VolumeMount(name="workspace", mount_path="/workspace")])
+                requests={
+                    "cpu": str(job.get("cpu") or 2),
+                    "memory": f"{job.get('memory_gb') or 4}Gi",
+                },
+                limits=limits,
+            ),
+            volume_mounts=[
+                client.V1VolumeMount(name="workspace", mount_path="/workspace")
+            ],
+        )
         pod_spec = client.V1PodSpec(
             restart_policy="Never",
             containers=[container],
-            volumes=[client.V1Volume(
-                name="workspace",
-                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                    self._user_pvc(job)))])
+            volumes=[
+                client.V1Volume(
+                    name="workspace",
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                        self._user_pvc(job)
+                    ),
+                )
+            ],
+        )
         return client.V1Job(
-            metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE, labels=self._labels(job)),
+            metadata=client.V1ObjectMeta(
+                name=name, namespace=NAMESPACE, labels=self._labels(job)
+            ),
             spec=client.V1JobSpec(
                 backoff_limit=0,
                 active_deadline_seconds=job["timeout_minutes"] * 60,
                 ttl_seconds_after_finished=300,
                 template=client.V1PodTemplateSpec(
                     metadata=client.V1ObjectMeta(labels=self._labels(job)),
-                    spec=pod_spec)))
+                    spec=pod_spec,
+                ),
+            ),
+        )
 
     async def execute(self, job_id: str):
         job = db.get_job(job_id)
@@ -212,23 +302,35 @@ class K8sExecutor:
             return
         if job["status"] != "pending":
             # 上一轮还在 running/initializing，或已被 cancelled — 跳过本次触发
-            db.log_event("DEBUG", "system",
-                         f"Trigger skipped (status={job['status']}): {job_id}")
+            db.log_event(
+                "DEBUG", "system", f"Trigger skipped (status={job['status']}): {job_id}"
+            )
             return
-        db.update_job(job_id, status="running",
-                      started_at=db.now_iso())
+        db.update_job(job_id, status="running", started_at=db.now_iso())
         db.log_event("DEBUG", "system", f"Job started (k8s): {job_id}")
         name = self._name(job_id)
         # debug pod makes way for the gpu job (same PVC can't serve both)
         await self._ignore_notfound(self.core.delete_namespaced_pod, name, NAMESPACE)
+        # a force-delete/cancel landing in this window must win: re-check
+        job = db.get_job(job_id)
+        if not job or job["status"] != "running":
+            db.log_event("DEBUG", "system", f"Execute aborted (status changed): {job_id}")
+            return
         try:
-            await asyncio.to_thread(self.batch.create_namespaced_job, NAMESPACE, self._gpu_job(job))
+            await asyncio.to_thread(
+                self.batch.create_namespaced_job, NAMESPACE, self._gpu_job(job)
+            )
         except ApiException as e:
             if e.status != 409:
-                db.update_job(job_id, status="failed",
-                              finished_at=db.now_iso(),
-                              error=f"k8s create failed: {e.reason}")
-                db.log_event("ERROR", "system", f"Job {job_id} create failed: {e.reason}")
+                db.update_job(
+                    job_id,
+                    status="failed",
+                    finished_at=db.now_iso(),
+                    error=f"k8s create failed: {e.reason}",
+                )
+                db.log_event(
+                    "ERROR", "system", f"Job {job_id} create failed: {e.reason}"
+                )
                 return
         await self.watch(job_id)
 
@@ -240,15 +342,21 @@ class K8sExecutor:
             # never leave a job stuck in "running" because the watcher died
             job = db.get_job(job_id)
             if job and job["status"] == "running":
-                db.update_job(job_id, status="failed",
-                              finished_at=db.now_iso(), error=f"watcher error: {e}")
+                db.update_job(
+                    job_id,
+                    status="failed",
+                    finished_at=db.now_iso(),
+                    error=f"watcher error: {e}",
+                )
             db.log_event("ERROR", "system", f"Watcher died for {job_id}: {e}")
 
     async def _watch(self, job_id: str):
         name = self._name(job_id)
         while True:
             try:
-                st = await asyncio.to_thread(self.batch.read_namespaced_job_status, name, NAMESPACE)
+                st = await asyncio.to_thread(
+                    self.batch.read_namespaced_job_status, name, NAMESPACE
+                )
             except ApiException as e:
                 if e.status == 404:
                     # job deleted out from under us (manual kubectl delete or
@@ -256,34 +364,59 @@ class K8sExecutor:
                     # cancel path deletes the job too and sets 'cancelled'.
                     job = db.get_job(job_id)
                     if job and job["status"] == "running":
-                        db.update_job(job_id, status="failed",
-                                      finished_at=db.now_iso(),
-                                      error="k8s job deleted externally")
-                        db.log_event("WARNING", "system", f"Job {job_id} disappeared from cluster")
+                        db.update_job(
+                            job_id,
+                            status="failed",
+                            finished_at=db.now_iso(),
+                            error="k8s job deleted externally",
+                        )
+                        db.log_event(
+                            "WARNING",
+                            "system",
+                            f"Job {job_id} disappeared from cluster",
+                        )
                     return
                 raise
             status = st.status
+            if not status.succeeded and not status.failed:
+                await self._note_scheduling(job_id)
             if status.succeeded:
                 result, error = "done", None
                 break
             if status.failed:
-                cond = next((c for c in (status.conditions or []) if c.type == "Failed"), None)
+                cond = next(
+                    (c for c in (status.conditions or []) if c.type == "Failed"), None
+                )
                 if cond and cond.reason == "DeadlineExceeded":
                     result, error = "timeout", "killed after max runtime"
                 else:
                     result = "failed"
                     error = cond.message if cond else "job failed"
+                    # deadline kills can race into BackoffLimitExceeded;
+                    # if the deadline has passed, call it what it is
+                    row = db.get_job(job_id)
+                    if row and row.get("started_at") and row.get("timeout_minutes"):
+                        from datetime import datetime, timedelta
+                        started = datetime.fromisoformat(row["started_at"])
+                        if datetime.now(db.get_tz()) >= started + timedelta(
+                                minutes=row["timeout_minutes"]):
+                            result, error = "timeout", "killed after max runtime"
                 break
             await asyncio.sleep(5)
 
         await self._collect_logs(job_id)
         await self._collect_outputs(job_id)
-        objects = self.storage.list_objects(self.storage.bucket, f"jobs/{job_id}/output/")
-        db.update_job(job_id, status=result,
-                      finished_at=db.now_iso(),
-                      output_count=len(objects),
-                      s3_prefix=f"{BUCKET}/jobs/{job_id}/",
-                      error=error)
+        objects = self.storage.list_objects(
+            self.storage.bucket, f"jobs/{job_id}/output/"
+        )
+        db.update_job(
+            job_id,
+            status=result,
+            finished_at=db.now_iso(),
+            output_count=len(objects),
+            s3_prefix=f"{BUCKET}/jobs/{job_id}/",
+            error=error,
+        )
         db.log_event("DEBUG", "system", f"Job finished: {job_id} status={result}")
 
         # ── rearm recurring jobs (daily/weekly) ──
@@ -303,6 +436,7 @@ class K8sExecutor:
         """若 job 是周期任务，算下次触发时间、置 pending、异步重建 debug pod。"""
         from . import timecheck as _tc
         from .main import _not_in_past
+
         job = db.get_job(job_id)
         if not job or job.get("repeat_type") not in ("daily", "weekly"):
             return
@@ -311,56 +445,79 @@ class K8sExecutor:
         if not owner.get("is_admin"):
             next_dt = _tc.check_scheduled_time(next_dt)
         next_dt = _not_in_past(next_dt)
-        db.update_job(job_id,
-                      status="pending",
-                      scheduled_at=next_dt.isoformat(),
-                      started_at=None, finished_at=None,
-                      error=None, output_count=0)
-        db.log_event("INFO", "job",
-                     f"Job rearmed: {job_id} -> {next_dt.isoformat()}",
-                     user_id=job["user_id"])
+        db.update_job(
+            job_id,
+            status="pending",
+            scheduled_at=next_dt.isoformat(),
+            started_at=None,
+            finished_at=None,
+            error=None,
+            output_count=0,
+        )
+        db.log_event(
+            "INFO",
+            "job",
+            f"Job rearmed: {job_id} -> {next_dt.isoformat()}",
+            user_id=job["user_id"],
+        )
         self._spawn_bg(self._rearm_prepare(job_id, job, owner))
 
     async def _rearm_prepare(self, job_id: str, job_snapshot: dict, owner: dict):
         """重建 debug pod 并刷新 ssh 信息、重排调度。"""
         from .main import scheduler
         from datetime import datetime as _dt
+
         try:
             # 守卫 1：进入时若已非 pending（被 cancel/delete 抢先），直接退出
             if (db.get_job(job_id) or {}).get("status") != "pending":
                 return
-            ssh_info = await self.prepare({
-                "id": job_id,
-                "user_id": job_snapshot["user_id"],
-                "image": job_snapshot["image"],
-                "storage_gb": owner.get("storage_quota_override_gb")
-                              or db.get_param("storage_default_quota_gb")
-                              or 10,
-            })
+            ssh_info = await self.prepare(
+                {
+                    "id": job_id,
+                    "user_id": job_snapshot["user_id"],
+                    "image": job_snapshot["image"],
+                    "storage_gb": owner.get("storage_quota_override_gb")
+                    or db.get_param("storage_default_quota_gb")
+                    or 10,
+                }
+            )
             # 守卫 2：prepare 是慢调用，期间用户可能已 cancel/delete；
             # 拆掉刚建的 debug pod，不碰 DB/scheduler
             if (db.get_job(job_id) or {}).get("status") != "pending":
                 try:
                     await self.teardown_debug(job_id)
                 except Exception as te:
-                    db.log_event("WARNING", "system",
-                                 f"teardown_debug after cancel failed for {job_id}: {te}")
+                    db.log_event(
+                        "WARNING",
+                        "system",
+                        f"teardown_debug after cancel failed for {job_id}: {te}",
+                    )
                 return
-            db.update_job(job_id,
-                          ssh_port=ssh_info["ssh_port"],
-                          ssh_password=ssh_info["ssh_password"])
+            db.update_job(
+                job_id,
+                ssh_port=ssh_info["ssh_port"],
+                ssh_password=ssh_info["ssh_password"],
+            )
             # 重新读出 scheduled_at（_maybe_rearm 已写入），并排触发器
             job_now = db.get_job(job_id)
             next_dt = _dt.fromisoformat(job_now["scheduled_at"])
-            scheduler.add_job(self.execute, DateTrigger(run_date=next_dt),
-                              args=[job_id], id=job_id, replace_existing=True)
+            scheduler.add_job(
+                self.execute,
+                DateTrigger(run_date=next_dt),
+                args=[job_id],
+                id=job_id,
+                replace_existing=True,
+            )
             self._spawn_bg(self.wait_ready(job_id))
         except Exception as e:
             db.log_event("ERROR", "system", f"Rearm prepare failed for {job_id}: {e}")
             # prepare 失败 — 标 failed，停止循环
-            db.update_job(job_id, status="failed",
-                          finished_at=db.now_iso(),
-                          error=f"rearm prepare failed: {e}")
+            db.update_job(
+                job_id,
+                status="failed",
+                finished_at=db.now_iso(),
+                error=f"rearm prepare failed: {e}",
+            )
 
     # ── cancel / cleanup ────────────────────────
 
@@ -368,8 +525,11 @@ class K8sExecutor:
         """Delete a running gpu job. Returns True if something was deleted."""
         try:
             await asyncio.to_thread(
-                self.batch.delete_namespaced_job, self._name(job_id), NAMESPACE,
-                propagation_policy="Background")
+                self.batch.delete_namespaced_job,
+                self._name(job_id),
+                NAMESPACE,
+                propagation_policy="Background",
+            )
             return True
         except ApiException as e:
             if e.status == 404:
@@ -380,7 +540,9 @@ class K8sExecutor:
         """Remove debug pod + svc (pending-job cancellation)."""
         name = self._name(job_id)
         await self._ignore_notfound(self.core.delete_namespaced_pod, name, NAMESPACE)
-        await self._ignore_notfound(self.core.delete_namespaced_service, name, NAMESPACE)
+        await self._ignore_notfound(
+            self.core.delete_namespaced_service, name, NAMESPACE
+        )
 
     async def cleanup(self, job_id: str):
         """Remove all remaining resources (record deletion).
@@ -393,7 +555,9 @@ class K8sExecutor:
         """Drop a user's workspace PVC (account deletion)."""
         await self._ignore_notfound(
             self.core.delete_namespaced_persistent_volume_claim,
-            f"ddp-user-{user_id}", NAMESPACE)
+            f"ddp-user-{user_id}",
+            NAMESPACE,
+        )
 
     # ── internals ───────────────────────────────
 
@@ -404,7 +568,8 @@ class K8sExecutor:
             if e.status != 404:
                 raise
 
-    async def _collect_logs(self, job_id: str):
+    async def _note_scheduling(self, job_id: str):
+        """While the gpu pod is unschedulable, surface the reason in job.error."""
         try:
             pods = await asyncio.to_thread(
                 self.core.list_namespaced_pod, NAMESPACE,
@@ -412,12 +577,52 @@ class K8sExecutor:
             runner = [p for p in pods.items if p.metadata.name != self._name(job_id)]
             if not runner:
                 return
+            pod = runner[0]
+            if pod.status.phase != "Pending":
+                job = db.get_job(job_id)
+                if job and job.get("error", "").startswith("waiting for resources"):
+                    db.update_job(job_id, error=None)
+                return
+            conds = pod.status.conditions or []
+            reason = next((c.message for c in conds
+                           if c.reason == "Unschedulable" and c.message), None)
+            if reason:
+                msg = f"waiting for resources: {reason.split(':')[-1].strip()}"
+                job = db.get_job(job_id)
+                if job and job.get("error") != msg:
+                    db.update_job(job_id, error=msg)
+        except Exception:
+            pass
+
+    async def fetch_pod_log(self, job_id: str) -> str | None:
+        """Live stdout of the gpu pod (available while it exists)."""
+        try:
+            pods = await asyncio.to_thread(
+                self.core.list_namespaced_pod,
+                NAMESPACE,
+                label_selector=f"ddp/job-id={job_id}",
+            )
+            runner = [p for p in pods.items if p.metadata.name != self._name(job_id)]
+            if not runner:
+                return None
             # _preload_content=False: the default path returns the *repr* of
             # the raw bytes (content starts with b'), not decoded text
             resp = await asyncio.to_thread(
-                self.core.read_namespaced_pod_log, runner[0].metadata.name, NAMESPACE,
-                _preload_content=False)
-            payload = resp.data.decode("utf-8", errors="replace").encode()
+                self.core.read_namespaced_pod_log,
+                runner[0].metadata.name,
+                NAMESPACE,
+                _preload_content=False,
+            )
+            return resp.data.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+    async def _collect_logs(self, job_id: str):
+        try:
+            log = await self.fetch_pod_log(job_id)
+            if log is None:
+                return
+            payload = log.encode()
             job_row = db.get_job(job_id) or {}
             if job_row.get("repeat_type") in ("daily", "weekly"):
                 sep = f"\n\n==== run @ {db.now_iso()} ====\n".encode()
@@ -425,7 +630,9 @@ class K8sExecutor:
             else:
                 self.storage.upload_bytes(f"jobs/{job_id}/logs/run.log", payload)
         except Exception as e:
-            db.log_event("WARNING", "system", f"Log collection failed for {job_id}: {e}")
+            db.log_event(
+                "WARNING", "system", f"Log collection failed for {job_id}: {e}"
+            )
 
     async def _collect_outputs(self, job_id: str):
         """Run a short collector job that mounts the workspace and uploads output/."""
@@ -435,13 +642,19 @@ class K8sExecutor:
         container = client.V1Container(
             name="collect",
             image=RUNNER_IMAGE,
-            env=[client.V1EnvVar("JOB_ID", job_id),
-                 client.V1EnvVar("OUTPUT_PATH", job_row.get("output_path") or "output"),
-                 *_S3_ENV],
-            volume_mounts=[client.V1VolumeMount(name="workspace", mount_path="/workspace")])
+            env=[
+                client.V1EnvVar("JOB_ID", job_id),
+                client.V1EnvVar("OUTPUT_PATH", job_row.get("output_path") or "output"),
+                *_S3_ENV,
+            ],
+            volume_mounts=[
+                client.V1VolumeMount(name="workspace", mount_path="/workspace")
+            ],
+        )
         job = client.V1Job(
-            metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE,
-                                         labels=self._labels({"id": job_id})),
+            metadata=client.V1ObjectMeta(
+                name=name, namespace=NAMESPACE, labels=self._labels({"id": job_id})
+            ),
             spec=client.V1JobSpec(
                 backoff_limit=1,
                 active_deadline_seconds=600,
@@ -451,18 +664,34 @@ class K8sExecutor:
                     spec=client.V1PodSpec(
                         restart_policy="Never",
                         containers=[container],
-                        volumes=[client.V1Volume(
-                            name="workspace",
-                            persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                                pvc_name))]))))
+                        volumes=[
+                            client.V1Volume(
+                                name="workspace",
+                                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                                    pvc_name
+                                ),
+                            )
+                        ],
+                    ),
+                ),
+            ),
+        )
         try:
             await asyncio.to_thread(self.batch.create_namespaced_job, NAMESPACE, job)
             for _ in range(120):  # ponytail: 10min cap matches activeDeadlineSeconds
-                st = await asyncio.to_thread(self.batch.read_namespaced_job_status, name, NAMESPACE)
+                st = await asyncio.to_thread(
+                    self.batch.read_namespaced_job_status, name, NAMESPACE
+                )
                 if st.status.succeeded or st.status.failed:
                     if st.status.failed:
-                        db.log_event("WARNING", "system", f"Output collection failed for {job_id}")
+                        db.log_event(
+                            "WARNING",
+                            "system",
+                            f"Output collection failed for {job_id}",
+                        )
                     return
                 await asyncio.sleep(5)
         except Exception as e:
-            db.log_event("WARNING", "system", f"Output collection failed for {job_id}: {e}")
+            db.log_event(
+                "WARNING", "system", f"Output collection failed for {job_id}: {e}"
+            )
