@@ -76,7 +76,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     entryCommand: "Entry Command", entryCommandHint: "Runs in /workspace of the GPU pod at the scheduled time.",
     image: "Image", imageHint: "Base environment shared by the debug pod and the GPU run.",
     outputPath: "Output Dir", outputPathHint: "Absolute path, or relative to /workspace. Harvested to S3 after the run.",
-    sshAccess: "SSH Access (debug pod)", sshCmd: "Command", sshPassword: "Password", sshHint: "Your /workspace persists and is shared across all your jobs. Files in output/ are harvested to S3 after each run.",
+    sshAccess: "SSH Access (debug pod)", sshCmd: "Command", sshPassword: "Password", sshHint: "Your /workspace persists and is shared across all your jobs. Files in output/ are harvested to S3 after each run.", copy: "Copy", copied: "Copied", showPw: "Show password",
     scheduledStart: "Scheduled Start (local time)", scheduledStartHint: "Platform fires within ~30s of this time.",
     maxRuntime: "Max Runtime (minutes)", maxRuntimeHint: "Hard kill at this point. Outputs collected up to then.",
     gpus: "GPUs", gpusHint: "vGPU slices via HAMi. 0 = CPU only.",
@@ -98,7 +98,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     editJob: "Edit", saved: "Saved.",
     deleteJob: "Delete", deleteConfirm: "Delete this job and all its resources?",
     logs: "Logs", noLogs: "No logs yet.", outputArtifacts: "Output Artifacts",
-    downloadLogs: "Download Logs", downloadCode: "Download Code",
+    downloadLogs: "Download Logs", downloadCode: "Download Code", lines: "lines", scrollForMore: "scroll for more",
     failed: "Failed", files: "file(s)", min: "min",
     st_initializing: "initializing", dragToOrder: "Drag to reorder queue",
     jobGone: "This job no longer exists.", clearLogs: "Clear", clearLogsConfirm: "Delete all system logs?",
@@ -153,7 +153,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     entryCommand: "入口命令", entryCommandHint: "调度时间到时在 GPU Pod 的 /workspace 中执行。",
     image: "镜像", imageHint: "调试 Pod 与 GPU 运行共用同一基础环境。",
     outputPath: "产物目录", outputPathHint: "绝对路径，或相对 /workspace。运行结束后收割到 S3。",
-    sshAccess: "SSH 访问（调试 Pod）", sshCmd: "命令", sshPassword: "密码", sshHint: "/workspace 在你名下所有作业间持久共享。output/ 里的文件会在每次运行后收割到 S3。",
+    sshAccess: "SSH 访问（调试 Pod）", sshCmd: "命令", sshPassword: "密码", sshHint: "/workspace 在你名下所有作业间持久共享。output/ 里的文件会在每次运行后收割到 S3。", copy: "复制", copied: "已复制", showPw: "显示密码",
     scheduledStart: "计划启动时间 (本地)", scheduledStartHint: "平台在此时间后约 30 秒内触发。",
     maxRuntime: "最大运行时长 (分钟)", maxRuntimeHint: "超时强制终止，已生成的产物仍会收集。",
     gpus: "GPU 数量", gpusHint: "HAMi vGPU 切分。0 = 仅用 CPU。",
@@ -175,7 +175,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     editJob: "修改", saved: "已保存。",
     deleteJob: "删除", deleteConfirm: "删除此作业及所有相关资源？",
     logs: "日志", noLogs: "暂无日志。", outputArtifacts: "产物文件",
-    downloadLogs: "下载日志", downloadCode: "下载代码",
+    downloadLogs: "下载日志", downloadCode: "下载代码", lines: "行", scrollForMore: "向下滚动加载更多",
     failed: "操作失败", files: "个文件", min: "分钟",
     st_initializing: "初始化中", dragToOrder: "拖拽调整执行顺序",
     jobGone: "该作业已不存在。", clearLogs: "清空", clearLogsConfirm: "确定清空全部系统日志？",
@@ -272,6 +272,13 @@ let cpuQuota = 8;
 let memQuota = 32;
 let gpuTimer: ReturnType<typeof setInterval> | null = null;
 let modalLogTimer: ReturnType<typeof setInterval> | null = null;
+let modalSsh: { cmd: string; pw: string } | null = null;
+let logLines: string[] = [];
+let logRendered = 0;
+const LOG_CHUNK = 100;
+const ICON_COPY = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const EYE_OPEN = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
 let adminViewActive = false;
 let adminTab: 'users' | 'params' | 'logs' | 'monitor' = 'users';
 let logsPage = 0;
@@ -886,14 +893,18 @@ async function openModal(jobId: string): Promise<void> {
 
   if (job.ssh_port && (job.status === 'initializing' || job.status === 'pending' || job.status === 'running')) {
     const cmd = `ssh root@${location.hostname} -p ${job.ssh_port}`;
+    modalSsh = { cmd, pw: job.ssh_password || '' };
+    const pwMask = '•'.repeat(Math.max(4, (job.ssh_password || '').length || 8));
     html += `
       <div class="modal-section"><h4>${t('sshAccess')}</h4>
         <div class="kv-grid">
-          <div class="kv"><span class="k">${t('sshCmd')}</span><span class="v"><code>${cmd}</code></span></div>
-          <div class="kv"><span class="k">${t('sshPassword')}</span><span class="v"><code>${escapeHtml(job.ssh_password || '')}</code></span></div>
+          <div class="kv"><span class="k">${t('sshCmd')}</span><span class="v ssh-val"><code>${cmd}</code><button class="btn-copy" data-copy="cmd" title="${t('copy')}">${ICON_COPY}</button></span></div>
+          <div class="kv"><span class="k">${t('sshPassword')}</span><span class="v ssh-val"><code id="ssh-pw" data-shown="0">${pwMask}</code><button class="btn-copy" data-pw-toggle="1" title="${t('showPw')}">${EYE_OPEN}</button><button class="btn-copy" data-copy="pw" title="${t('copy')}">${ICON_COPY}</button></span></div>
         </div>
         <div class="hint" style="margin-top:8px">${t('sshHint')}</div>
       </div>`;
+  } else {
+    modalSsh = null;
   }
   if (job.status === 'pending' || job.status === 'initializing' || job.status === 'running') {
     html += `<div class="modal-section">
@@ -904,7 +915,7 @@ async function openModal(jobId: string): Promise<void> {
     html += `<div class="modal-section"><h4>${t('error')}</h4><div class="error-box">${escapeHtml(job.error)}</div></div>`;
   }
 
-  html += `<div class="modal-section"><h4>${t('logs')}${logs ? ` <button class="btn-cancel" data-log-download="${job.id}">${t('downloadLogs')}</button>` : ''}</h4><div class="log-box">${logs ? ansiToHtml(logs) : `<span style="color:var(--text-dim)">${t('noLogs')}</span>`}</div></div>`;
+  html += `<div class="modal-section"><h4>${t('logs')}${logs ? ` <button class="btn-cancel" data-log-download="${job.id}">${t('downloadLogs')}</button>` : ''}</h4><div class="log-meta"></div><div class="log-box"></div></div>`;
 
   if (outputs.length) {
     html += `<div class="modal-section"><h4>${t('outputArtifacts')}</h4><ul class="output-list">`;
@@ -917,14 +928,23 @@ async function openModal(jobId: string): Promise<void> {
 
   body.innerHTML = html;
 
+  logLines = logs ? ansiToLines(logs) : [];
+  logRendered = 0;
+  if (logLines.length) { renderLogChunk(); attachLogScroll(); }
+  else { const box = document.querySelector('.log-box'); if (box) box.innerHTML = `<span style="color:var(--text-dim)">${t('noLogs')}</span>`; }
+
   if (modalLogTimer) { clearInterval(modalLogTimer); modalLogTimer = null; }
   if (job.status === 'running') {
     modalLogTimer = setInterval(async () => {
       const r = await fetch(`${API}/${jobId}/logs`);
       if (!r.ok) return;
       const l: string = (await r.json()).logs;
-      const box = document.querySelector('.log-box');
-      if (box) box.innerHTML = l ? ansiToHtml(l) : `<span style="color:var(--text-dim)">${t('noLogs')}</span>`;
+      logLines = l ? ansiToLines(l) : [];
+      const box = document.querySelector('.log-box') as HTMLElement | null;
+      // Auto-follow only when the user is near the bottom; otherwise leave their scroll position alone.
+      const atBottom = !box || (box.scrollTop + box.clientHeight >= 0.8 * box.scrollHeight);
+      if (atBottom) while (logRendered < logLines.length) renderLogChunk(true);
+      else { const meta = document.querySelector('.log-meta'); if (meta) meta.textContent = `${logRendered} / ${logLines.length} ${t('lines')} · ${t('scrollForMore')}`; }
     }, 5000);
   }
 }
@@ -1022,6 +1042,7 @@ async function saveEdit(e: SubmitEvent): Promise<void> {
 
 function closeModal(): void {
   if (modalLogTimer) { clearInterval(modalLogTimer); modalLogTimer = null; }
+  logLines = []; logRendered = 0;
   $('modal').classList.remove('open');
 }
 
@@ -1051,42 +1072,66 @@ const ANSI_COLORS: Record<number, string> = {
   94: '#93c5fd', 95: '#f0abfc', 96: '#67e8f9', 97: '#ffffff',
 };
 
-function ansiToHtml(src: string): string {
-  let out = '';
+// Render log in chunks on demand: open shows first LOG_CHUNK lines, scroll to 80% loads the next chunk.
+// ansiToLines preserves ANSI color state across line boundaries (one pass over the full log).
+function ansiToLines(src: string): string[] {
+  const lines: string[] = [];
   let style = '';
+  let lineHtml = '';
   let buf = '';
-  const flush = () => {
+  const flushBuf = () => {
     if (!buf) return;
-    const esc = escapeHtml(buf);
-    out += style ? `<span style="${style}">${esc}</span>` : esc;
+    lineHtml += style ? `<span style="${style}">${escapeHtml(buf)}</span>` : escapeHtml(buf);
     buf = '';
   };
+  const endLine = () => { flushBuf(); lines.push(lineHtml); lineHtml = ''; };
   let i = 0;
   while (i < src.length) {
     if (src[i] === '\x1b') {
       const m = /^\x1b\[([0-9;]*)m/.exec(src.slice(i));
       if (m) {
-        flush();
+        flushBuf();
         for (const p of m[1].split(';')) {
           const n = parseInt(p || '0', 10);
           if (n === 0) style = '';
           else if (n === 1) style += 'font-weight:600;';
-          else if (ANSI_COLORS[n]) {
-            style = style.replace(/color:[^;]+;?/g, '') + `color:${ANSI_COLORS[n]};`;
-          }
+          else if (ANSI_COLORS[n]) style = style.replace(/color:[^;]+;?/g, '') + `color:${ANSI_COLORS[n]};`;
         }
-        i += m[0].length;
-        continue;
+        i += m[0].length; continue;
       }
       const m2 = /^\x1b(\[[0-9;?]*[A-Za-z]|\][^\x07]*\x07|.)/.exec(src.slice(i));
-      i += m2 ? m2[0].length : 1;  // drop unknown escapes/control seqs
-      continue;
+      i += m2 ? m2[0].length : 1; continue;
     }
     const c = src[i++];
-    if (c >= ' ' || c === '\n' || c === '\t') buf += c;  // drop control chars
+    if (c === '\n') { endLine(); continue; }
+    if (c >= ' ' || c === '\t') buf += c;
   }
-  flush();
-  return out;
+  if (buf || lineHtml) endLine();
+  return lines;
+}
+
+function renderLogChunk(all = false): void {
+  const box = document.querySelector('.log-box') as HTMLElement | null;
+  const meta = document.querySelector('.log-meta');
+  if (!box) return;
+  const target = all ? logLines.length : Math.min(logRendered + LOG_CHUNK, logLines.length);
+  if (target <= logRendered) { if (meta) meta.textContent = `${logRendered} / ${logLines.length} ${t('lines')}`; return; }
+  if (logRendered === 0) {
+    box.innerHTML = logLines.slice(0, target).join('\n');
+  } else {
+    box.insertAdjacentHTML('beforeend', '\n' + logLines.slice(logRendered, target).join('\n'));
+  }
+  logRendered = target;
+  if (meta) meta.textContent = logRendered < logLines.length ? `${logRendered} / ${logLines.length} ${t('lines')} · ${t('scrollForMore')}` : `${logRendered} / ${logLines.length} ${t('lines')}`;
+}
+
+function attachLogScroll(): void {
+  const box = document.querySelector('.log-box') as HTMLElement | null;
+  if (!box) return;
+  box.addEventListener('scroll', () => {
+    if (logRendered >= logLines.length) return;
+    if (box.scrollTop + box.clientHeight >= 0.8 * box.scrollHeight) renderLogChunk();
+  });
 }
 
 // ── Utils ────────────────────────────────────
@@ -1095,6 +1140,15 @@ function escapeHtml(s: string | null | undefined): string {
   const div = document.createElement('div');
   div.textContent = String(s);
   return div.innerHTML;
+}
+
+function copyText(s: string): Promise<void> {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(s);
+  const ta = document.createElement('textarea');
+  ta.value = s; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+  return Promise.resolve();
 }
 
 function formatSize(bytes: number): string {
@@ -1181,6 +1235,24 @@ document.addEventListener('DOMContentLoaded', () => {
   $('modal-body').addEventListener('click', e => {
     const btn = (e.target as HTMLElement).closest('button') as HTMLElement | null;
     if (btn?.dataset.editId) { showEditForm(btn.dataset.editId); return; }
+    if (btn?.dataset.copy && modalSsh) {
+      const val = btn.dataset.copy === 'cmd' ? modalSsh.cmd : modalSsh.pw;
+      copyText(val).then(() => {
+        btn.classList.add('copied'); const old = btn.innerHTML; btn.innerHTML = t('copied');
+        setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = old; }, 1200);
+      });
+      return;
+    }
+    if (btn?.dataset.pwToggle && modalSsh) {
+      const code = document.getElementById('ssh-pw');
+      if (code) {
+        const shown = code.dataset.shown === '1';
+        code.textContent = shown ? '•'.repeat(Math.max(4, modalSsh.pw.length || 8)) : modalSsh.pw;
+        code.dataset.shown = shown ? '0' : '1';
+        btn.innerHTML = shown ? EYE_OPEN : EYE_OFF;
+      }
+      return;
+    }
     if (btn?.dataset.jobId) cancelJob(btn.dataset.jobId);
     if (btn?.dataset.logDownload) {
       const a = document.createElement('a');
