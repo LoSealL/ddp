@@ -127,8 +127,8 @@ def init_db():
         ("storage_default_quota_gb", "10.0"),
         ("gpu_devices", "[]"),
         ("tz_offset_hours", "8"),
-        ("cpu_default_quota", "8"),
-        ("memory_default_quota_gb", "32"),
+        ("cpu_default_quota", "16"),
+        ("memory_default_quota_gb", "64"),
     ]
     for key, value in default_params:
         conn.execute(

@@ -278,8 +278,8 @@ let imageChoices: string[] = [];
 let windowStart = '00:00';
 let windowEnd = '23:59';
 let gpuDefault = 0;
-let cpuQuota = 8;
-let memQuota = 32;
+let cpuQuota = 16;
+let memQuota = 64;
 let gpuTimer: ReturnType<typeof setInterval> | null = null;
 let modalLogTimer: ReturnType<typeof setInterval> | null = null;
 let modalSsh: { cmd: string; pw: string } | null = null;
@@ -372,8 +372,8 @@ async function checkAuth(): Promise<boolean> {
       windowStart = user.time_window_start || windowStart;
       windowEnd = user.time_window_end || windowEnd;
       gpuDefault = user.gpu_default_quota ?? 0;
-      cpuQuota = user.cpu_quota ?? 8;
-      memQuota = user.mem_quota ?? 32;
+      cpuQuota = user.cpu_quota ?? 16;
+      memQuota = user.mem_quota ?? 64;
       showAppView(user.username);
       return true;
     }

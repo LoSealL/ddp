@@ -162,10 +162,10 @@ async def me(user: dict = Depends(auth.get_current_user)):
     params = db.get_all_params()
     cpu_quota = full.get("cpu_quota_override")
     if cpu_quota is None:
-        cpu_quota = params.get("cpu_default_quota", 8)
+        cpu_quota = params.get("cpu_default_quota", 16)
     mem_quota = full.get("memory_quota_override_gb")
     if mem_quota is None:
-        mem_quota = params.get("memory_default_quota_gb", 32)
+        mem_quota = params.get("memory_default_quota_gb", 64)
     return {
         "id": user["id"],
         "username": user["username"],
@@ -337,14 +337,14 @@ async def create_job(
         )
     cpu_cap = full_user.get("cpu_quota_override")
     if cpu_cap is None:
-        cpu_cap = db.get_param("cpu_default_quota") or 8
+        cpu_cap = db.get_param("cpu_default_quota") or 16
     if cpu > cpu_cap:
         raise HTTPException(
             403, f"CPU quota exceeded: requested {cpu}, allowed {cpu_cap}"
         )
     mem_cap = full_user.get("memory_quota_override_gb")
     if mem_cap is None:
-        mem_cap = db.get_param("memory_default_quota_gb") or 32
+        mem_cap = db.get_param("memory_default_quota_gb") or 64
     if memory_gb > mem_cap:
         raise HTTPException(
             403, f"Memory quota exceeded: requested {memory_gb}GB, allowed {mem_cap}GB"
@@ -633,7 +633,7 @@ def _apply_job_edits(
         if cpu is not None:
             cap = owner.get("cpu_quota_override")
             if cap is None:
-                cap = db.get_param("cpu_default_quota") or 8
+                cap = db.get_param("cpu_default_quota") or 16
             if cpu > cap:
                 raise HTTPException(
                     403, f"CPU quota exceeded: requested {cpu}, allowed {cap}"
@@ -642,7 +642,7 @@ def _apply_job_edits(
         if memory_gb is not None:
             cap = owner.get("memory_quota_override_gb")
             if cap is None:
-                cap = db.get_param("memory_default_quota_gb") or 32
+                cap = db.get_param("memory_default_quota_gb") or 64
             if memory_gb > cap:
                 raise HTTPException(
                     403,
