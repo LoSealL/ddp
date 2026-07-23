@@ -140,7 +140,8 @@ const I18N: Record<Lang, Record<string, string>> = {
     gpuPool: "GPU Pool", free: "free", sharing: "sharing", gpuFree: "available", gpuDisabled: "disabled",
     nodeName: "Node (optional)", nodeNameHint: "Pin the job to a specific node. Auto picks the node with most free GPU memory.",
     nodeAuto: "Auto",
-    hostMounts: "Host Path Mounts (optional)", hostMountsHint: "One per line: /host/path:/container/path. System dirs are blocked.",
+    hostMounts: "Host Path Mounts (optional)", hostMountsHint: "Map host directories into the pod. Host system dirs are blocked.",
+    advanced: "Advanced", hostPathLabel: "Host Path", podPathLabel: "Pod Path",
   },
   zh: {
     tagline: "延迟调度平台",
@@ -220,7 +221,8 @@ const I18N: Record<Lang, Record<string, string>> = {
     gpuPool: "GPU 资源池", free: "空闲", sharing: "共享容器", gpuFree: "可用", gpuDisabled: "已禁用",
     nodeName: "节点（可选）", nodeNameHint: "将作业固定到指定节点。自动模式选择显存空闲最多的节点。",
     nodeAuto: "自动",
-    hostMounts: "宿主机路径映射（可选）", hostMountsHint: "每行一条：/宿主机路径:/容器内路径。系统目录禁止映射。",
+    hostMounts: "宿主机路径映射（可选）", hostMountsHint: "将宿主机目录映射进 Pod。系统目录禁止映射。",
+    advanced: "高级", hostPathLabel: "宿主机路径", podPathLabel: "Pod 路径",
   },
 };
 
@@ -727,6 +729,19 @@ function setDefaultTime(): void {
   $('gpu-mem-field').style.display = Math.min(gpuDefault, gpuQuota) > 0 ? '' : 'none';
 }
 
+// ── Host mount rows ──────────────────────────
+function addMountRow(host = '', pod = ''): void {
+  const row = document.createElement('div');
+  row.className = 'mount-row';
+  row.innerHTML = `
+    <input type="text" class="mount-host" placeholder="/mnt/sdb4/data" value="${escapeHtml(host)}" />
+    <span class="mount-arrow">→</span>
+    <input type="text" class="mount-pod" placeholder="/mnt/data" value="${escapeHtml(pod)}" />
+    <button type="button" class="mount-del" title="×">×</button>`;
+  row.querySelector('.mount-del')!.addEventListener('click', () => row.remove());
+  $('mount-rows').appendChild(row);
+}
+
 // ── Submit ───────────────────────────────────
 async function submitJob(e: SubmitEvent): Promise<void> {
   e.preventDefault();
@@ -739,15 +754,11 @@ async function submitJob(e: SubmitEvent): Promise<void> {
     if (days.length === 0) { alert(t('weekdaysRequired')); return; }
   }
 
-  const mountsRaw = ((fd.get('host_mounts_raw') as string) || '').trim();
-  fd.delete('host_mounts_raw');
-  if (mountsRaw) {
-    const mounts = mountsRaw.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
-      const i = l.indexOf(':');
-      return { host: i < 0 ? l : l.slice(0, i), container: i < 0 ? '' : l.slice(i + 1) };
-    });
-    fd.set('host_mounts', JSON.stringify(mounts));
-  }
+  const mounts = Array.from(document.querySelectorAll('#mount-rows .mount-row')).map(r => ({
+    host: (r.querySelector('.mount-host') as HTMLInputElement).value.trim(),
+    container: (r.querySelector('.mount-pod') as HTMLInputElement).value.trim(),
+  })).filter(m => m.host || m.container);
+  if (mounts.length) fd.set('host_mounts', JSON.stringify(mounts));
 
   btn.disabled = true; btn.textContent = t('scheduling');
   try {
@@ -1206,6 +1217,8 @@ document.addEventListener('DOMContentLoaded', () => {
   $('btn-logout').addEventListener('click', doLogout);
   $('btn-passwd').addEventListener('click', showPasswordForm);
   $('job-form').addEventListener('submit', submitJob);
+  $('mount-add').addEventListener('click', () => addMountRow());
+  addMountRow();
   document.querySelectorAll<HTMLInputElement>('input[name="repeat_type"]').forEach(radio => {
     radio.addEventListener('change', () => {
       const weeklyField = document.getElementById('repeat-weekdays-field');

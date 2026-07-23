@@ -146,6 +146,47 @@ header .user-area .username strong { color: var(--text); }
 .repeat-block .field + .field { margin-top: 10px; }
 .repeat-block .field > label { margin-bottom: 6px; font-size: 12px; }
 
+/* Advanced collapsible section */
+details.advanced { margin-bottom: 16px; }
+details.advanced > summary {
+  cursor: pointer; user-select: none; list-style: none;
+  font-size: 13px; color: var(--text-dim); padding: 8px 12px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+}
+details.advanced > summary::before { content: '▸ '; }
+details.advanced[open] > summary::before { content: '▾ '; }
+details.advanced[open] > summary { border-radius: 10px 10px 0 0; border-bottom: none; }
+details.advanced .advanced-body {
+  border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 10px 10px; padding: 12px;
+}
+details.advanced .advanced-body .field:last-child { margin-bottom: 0; }
+
+/* Host mount rows panel */
+.mount-panel {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px;
+}
+.mount-head { display: flex; gap: 8px; margin-bottom: 6px; font-size: 12px; color: var(--text-dim); }
+.mount-head span { flex: 1; }
+.mount-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.mount-row input {
+  flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; color: var(--text); font-size: 13px;
+}
+.mount-row input:focus { outline: none; border-color: var(--accent); }
+.mount-arrow { color: var(--text-dim); }
+.mount-del {
+  background: none; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: 16px; padding: 0 4px;
+}
+.mount-del:hover { color: var(--red); }
+.mount-add {
+  width: 100%; background: var(--card); border: 1px dashed var(--border);
+  border-radius: 8px; color: var(--text-dim); cursor: pointer; padding: 6px; font-size: 14px;
+}
+.mount-add:hover { border-color: var(--accent); color: var(--accent); }
+
 .repeat-options, .weekday-checks {
   display: flex;
   flex-wrap: wrap;

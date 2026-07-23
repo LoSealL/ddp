@@ -77,11 +77,6 @@
           <div class="hint" data-i18n="entryCommandHint">Shell command to run inside the project root.</div>
         </div>
         <div class="field">
-          <label data-i18n="outputPath">Output Dir</label>
-          <input type="text" name="output_path" value="output" />
-          <div class="hint" data-i18n="outputPathHint">Absolute path, or relative to /workspace. Harvested to S3 after the run.</div>
-        </div>
-        <div class="field">
           <label data-i18n="scheduledStart">Scheduled Start (local time)</label>
           <input type="datetime-local" name="scheduled_at" id="scheduled_at" required />
           <div class="hint" data-i18n="scheduledStartHint">Platform fires within ~30s of this time.</div>
@@ -123,24 +118,43 @@
           <input type="number" name="gpu_mem_mb" id="gpu_mem_mb" min="0" step="1024" placeholder="full share" />
           <div class="hint" data-i18n="gpuMemHint">Leave empty for a full-memory vGPU slice.</div>
         </div>
-        <div class="field">
-          <label data-i18n="cpuCores">CPU Cores</label>
-          <input type="number" name="cpu" id="cpu" value="2" min="0.5" step="0.5" />
-        </div>
-        <div class="field">
-          <label data-i18n="memoryGb">Memory (GB)</label>
-          <input type="number" name="memory_gb" id="memory_gb" value="4" min="0.5" step="0.5" />
-        </div>
-        <div class="field">
-          <label data-i18n="nodeName">Node (optional)</label>
-          <select name="node_name" id="node-select"></select>
-          <div class="hint" data-i18n="nodeNameHint">Pin the job to a specific node. Auto picks the node with most free GPU memory.</div>
-        </div>
-        <div class="field">
-          <label data-i18n="hostMounts">Host Path Mounts (optional)</label>
-          <textarea name="host_mounts_raw" id="host-mounts" rows="2" placeholder="/mnt/sdb4/data:/mnt/data"></textarea>
-          <div class="hint" data-i18n="hostMountsHint">One per line: /host/path:/container/path. System dirs are blocked.</div>
-        </div>
+        <details class="advanced">
+          <summary data-i18n="advanced">Advanced</summary>
+          <div class="advanced-body">
+            <div class="field">
+              <label data-i18n="outputPath">Output Dir</label>
+              <input type="text" name="output_path" value="output" />
+              <div class="hint" data-i18n="outputPathHint">Absolute path, or relative to /workspace. Harvested to S3 after the run.</div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label data-i18n="cpuCores">CPU Cores</label>
+                <input type="number" name="cpu" id="cpu" value="2" min="0.5" step="0.5" />
+              </div>
+              <div class="field">
+                <label data-i18n="memoryGb">Memory (GB)</label>
+                <input type="number" name="memory_gb" id="memory_gb" value="4" min="0.5" step="0.5" />
+              </div>
+            </div>
+            <div class="field">
+              <label data-i18n="nodeName">Node (optional)</label>
+              <select name="node_name" id="node-select"></select>
+              <div class="hint" data-i18n="nodeNameHint">Pin the job to a specific node. Auto picks the node with most free GPU memory.</div>
+            </div>
+            <div class="field">
+              <label data-i18n="hostMounts">Host Path Mounts (optional)</label>
+              <div class="mount-panel">
+                <div class="mount-head">
+                  <span data-i18n="hostPathLabel">Host Path</span>
+                  <span data-i18n="podPathLabel">Pod Path</span>
+                </div>
+                <div id="mount-rows"></div>
+                <button type="button" id="mount-add" class="mount-add" title="+">+</button>
+              </div>
+              <div class="hint" data-i18n="hostMountsHint">Map host directories into the pod. Host system dirs are blocked.</div>
+            </div>
+          </div>
+        </details>
         <button type="submit" class="btn-submit" id="submit-btn" data-i18n="scheduleJob">Schedule Job</button>
       </form>
     </aside>
