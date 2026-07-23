@@ -734,7 +734,7 @@ function addMountRow(host = '', pod = ''): void {
   const row = document.createElement('div');
   row.className = 'mount-row';
   row.innerHTML = `
-    <input type="text" class="mount-host" placeholder="/mnt/sdb4/data" value="${escapeHtml(host)}" />
+    <input type="text" class="mount-host" placeholder="/nvme2data" value="${escapeHtml(host)}" />
     <span class="mount-arrow">→</span>
     <input type="text" class="mount-pod" placeholder="/mnt/data" value="${escapeHtml(pod)}" />
     <button type="button" class="mount-del" title="×">×</button>`;
