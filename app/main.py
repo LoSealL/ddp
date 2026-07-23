@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -180,6 +181,25 @@ async def me(user: dict = Depends(auth.get_current_user)):
     }
 
 
+async def _cluster_nodes() -> list[dict]:
+    if not hasattr(executor, "list_nodes"):
+        return []
+    try:
+        names = await asyncio.to_thread(executor.list_nodes)
+    except Exception:
+        return []
+    try:
+        gpu_nodes = {g["node"] for g in await asyncio.to_thread(gpu.fetch_gpu_status)}
+    except Exception:
+        gpu_nodes = set()
+    return [{"name": n, "gpu": n in gpu_nodes} for n in names]
+
+
+@app.get("/api/nodes")
+async def list_nodes(user: dict = Depends(auth.get_current_user)):
+    return {"nodes": await _cluster_nodes()}
+
+
 @app.get("/api/gpus")
 async def list_gpus(user: dict = Depends(auth.get_current_user)):
     try:
@@ -200,6 +220,43 @@ def _not_in_past(dt: datetime) -> datetime:
     """APScheduler silently drops triggers set in the past — clamp to now+1min."""
     now = datetime.now(db.get_tz())
     return dt if dt > now else now + timedelta(minutes=1)
+
+
+_HOST_BLACKLIST = (
+    "/etc", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/usr", "/boot",
+    "/proc", "/sys", "/dev", "/run", "/var", "/root", "/snap",
+)
+_CONTAINER_RESERVED = (
+    "/workspace", "/dev/shm",
+    "/etc", "/bin", "/sbin", "/lib", "/lib64", "/usr", "/proc", "/sys", "/dev",
+)
+
+
+def _validate_host_mounts(raw: str) -> str:
+    """Parse + validate the host_mounts JSON array; returns normalized JSON ('' if empty)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "host_mounts must be a JSON array of {host, container}")
+    if not isinstance(items, list) or len(items) > 8:
+        raise HTTPException(400, "host_mounts must be a list of up to 8 entries")
+    norm = []
+    for m in items:
+        if not isinstance(m, dict):
+            raise HTTPException(400, "host_mounts entries must be {host, container}")
+        host = os.path.normpath(str(m.get("host") or ""))
+        cont = os.path.normpath(str(m.get("container") or ""))
+        if not (host.startswith("/") and cont.startswith("/")):
+            raise HTTPException(400, "host_mounts paths must be absolute")
+        if host == "/" or any(host == b or host.startswith(b + "/") for b in _HOST_BLACKLIST):
+            raise HTTPException(400, f"host path not allowed: {host}")
+        if cont == "/" or any(cont == b or cont.startswith(b + "/") for b in _CONTAINER_RESERVED):
+            raise HTTPException(400, f"container path not allowed: {cont}")
+        norm.append({"host": host, "container": cont})
+    return json.dumps(norm)
 
 
 def _validate_output_path(p: str) -> str:
@@ -250,8 +307,16 @@ async def create_job(
     output_path: str = Form("output"),
     repeat_type: str = Form("none"),
     repeat_weekdays: list[str] = Form([]),
+    node_name: str | None = Form(None),
+    host_mounts: str = Form(""),
 ):
     output_path = _validate_output_path(output_path)
+    host_mounts = _validate_host_mounts(host_mounts)
+    node_name = (node_name or "").strip() or None
+    if node_name:
+        known_nodes = {n["name"] for n in await _cluster_nodes()}
+        if known_nodes and node_name not in known_nodes:
+            raise HTTPException(400, f"Unknown node: {node_name}")
     if cpu <= 0 or memory_gb <= 0:
         raise HTTPException(400, "cpu and memory_gb must be positive")
     try:
@@ -310,8 +375,12 @@ async def create_job(
                     "user_id": user["id"],
                     "image": image,
                     "storage_gb": storage_quota,
+                    "node_name": node_name,
+                    "host_mounts": host_mounts,
                 }
             )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         except Exception as e:
             db.log_event(
                 "ERROR", "job", f"Debug env prepare failed: {e}", user_id=user["id"]
@@ -338,6 +407,8 @@ async def create_job(
         memory_gb=memory_gb,
         repeat_type=rt,
         repeat_weekdays=rw,
+        node_name=node_name,
+        host_mounts=host_mounts or None,
     )
     if initializing:
         asyncio.create_task(executor.wait_ready(job_id))

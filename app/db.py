@@ -106,6 +106,8 @@ def init_db():
         "ALTER TABLE jobs ADD COLUMN memory_gb REAL NOT NULL DEFAULT 4",
         "ALTER TABLE jobs ADD COLUMN repeat_type TEXT NOT NULL DEFAULT 'none'",
         "ALTER TABLE jobs ADD COLUMN repeat_weekdays TEXT",
+        "ALTER TABLE jobs ADD COLUMN node_name TEXT",
+        "ALTER TABLE jobs ADD COLUMN host_mounts TEXT",
         "ALTER TABLE users ADD COLUMN cpu_quota_override REAL",
         "ALTER TABLE users ADD COLUMN memory_quota_override_gb REAL",
         "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0",
@@ -155,6 +157,8 @@ def create_job(
     memory_gb=4,
     repeat_type="none",
     repeat_weekdays=None,
+    node_name=None,
+    host_mounts=None,
 ):
     now = now_iso()
     conn = get_db()
@@ -162,8 +166,8 @@ def create_job(
         """
         INSERT INTO jobs (id, user_id, name, filename, image, entry_command, scheduled_at, timeout_minutes,
                           gpus, gpu_mem_mb, ssh_port, ssh_password, status, output_path, cpu, memory_gb,
-                          repeat_type, repeat_weekdays, created_at)
-        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          repeat_type, repeat_weekdays, node_name, host_mounts, created_at)
+        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             job_id,
@@ -183,6 +187,8 @@ def create_job(
             memory_gb,
             repeat_type,
             repeat_weekdays,
+            node_name,
+            host_mounts,
             now,
         ),
     )

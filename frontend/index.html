@@ -131,6 +131,16 @@
           <label data-i18n="memoryGb">Memory (GB)</label>
           <input type="number" name="memory_gb" id="memory_gb" value="4" min="0.5" step="0.5" />
         </div>
+        <div class="field">
+          <label data-i18n="nodeName">Node (optional)</label>
+          <select name="node_name" id="node-select"></select>
+          <div class="hint" data-i18n="nodeNameHint">Pin the job to a specific node. Auto picks the node with most free GPU memory.</div>
+        </div>
+        <div class="field">
+          <label data-i18n="hostMounts">Host Path Mounts (optional)</label>
+          <textarea name="host_mounts_raw" id="host-mounts" rows="2" placeholder="/mnt/sdb4/data:/mnt/data"></textarea>
+          <div class="hint" data-i18n="hostMountsHint">One per line: /host/path:/container/path. System dirs are blocked.</div>
+        </div>
         <button type="submit" class="btn-submit" id="submit-btn" data-i18n="scheduleJob">Schedule Job</button>
       </form>
     </aside>

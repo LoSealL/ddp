@@ -27,6 +27,8 @@ interface Job {
   output_path: string;
   repeat_type: string;
   repeat_weekdays: string | null;
+  node_name: string | null;
+  host_mounts: string | null;
   ssh_port: number | null;
   ssh_password: string | null;
 }
@@ -136,6 +138,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     endpoint: "Endpoint", noLogsAdmin: "No logs", noGpus: "No GPU devices configured",
     errorLoading: "Error loading data",
     gpuPool: "GPU Pool", free: "free", sharing: "sharing", gpuFree: "available", gpuDisabled: "disabled",
+    nodeName: "Node (optional)", nodeNameHint: "Pin the job to a specific node. Auto picks the node with most free GPU memory.",
+    nodeAuto: "Auto",
+    hostMounts: "Host Path Mounts (optional)", hostMountsHint: "One per line: /host/path:/container/path. System dirs are blocked.",
   },
   zh: {
     tagline: "延迟调度平台",
@@ -213,6 +218,9 @@ const I18N: Record<Lang, Record<string, string>> = {
     endpoint: "端点", noLogsAdmin: "暂无日志", noGpus: "未配置 GPU 设备",
     errorLoading: "加载失败",
     gpuPool: "GPU 资源池", free: "空闲", sharing: "共享容器", gpuFree: "可用", gpuDisabled: "已禁用",
+    nodeName: "节点（可选）", nodeNameHint: "将作业固定到指定节点。自动模式选择显存空闲最多的节点。",
+    nodeAuto: "自动",
+    hostMounts: "宿主机路径映射（可选）", hostMountsHint: "每行一条：/宿主机路径:/容器内路径。系统目录禁止映射。",
   },
 };
 
@@ -394,6 +402,7 @@ function showAppView(username: string): void {
   imgSel.innerHTML = imageChoices.map(i => `<option value="${i}">${i}</option>`).join('');
   const pt = imageChoices.find(i => i.includes('pytorch'));
   if (pt) imgSel.value = pt;
+  refreshNodes();
   setDefaultTime();
   refreshJobs();
   refreshGpus();
@@ -401,6 +410,19 @@ function showAppView(username: string): void {
   refreshTimer = setInterval(refreshJobs, 5000);
   if (gpuTimer) clearInterval(gpuTimer);
   gpuTimer = setInterval(refreshGpus, 60000);
+}
+
+async function refreshNodes(): Promise<void> {
+  const sel = $('node-select') as HTMLSelectElement;
+  try {
+    const resp = await fetch('/api/nodes');
+    if (!resp.ok) throw new Error();
+    const data: { nodes: { name: string; gpu: boolean }[] } = await resp.json();
+    sel.innerHTML = `<option value="">${t('nodeAuto')}</option>` +
+      data.nodes.map(n => `<option value="${escapeHtml(n.name)}">${escapeHtml(n.name)}${n.gpu ? ' 🎮' : ''}</option>`).join('');
+  } catch {
+    sel.innerHTML = `<option value="">${t('nodeAuto')}</option>`;
+  }
 }
 
 function showAuthView(): void {
@@ -717,6 +739,16 @@ async function submitJob(e: SubmitEvent): Promise<void> {
     if (days.length === 0) { alert(t('weekdaysRequired')); return; }
   }
 
+  const mountsRaw = ((fd.get('host_mounts_raw') as string) || '').trim();
+  fd.delete('host_mounts_raw');
+  if (mountsRaw) {
+    const mounts = mountsRaw.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+      const i = l.indexOf(':');
+      return { host: i < 0 ? l : l.slice(0, i), container: i < 0 ? '' : l.slice(i + 1) };
+    });
+    fd.set('host_mounts', JSON.stringify(mounts));
+  }
+
   btn.disabled = true; btn.textContent = t('scheduling');
   try {
     const resp = await fetch(API, { method: 'POST', body: fd });
@@ -884,6 +916,8 @@ async function openModal(jobId: string): Promise<void> {
         <div class="kv"><span class="k">CPU / ${t('memoryGb')}</span><span class="v">${job.cpu ?? '—'} / ${job.memory_gb ?? '—'} GB</span></div>
         <div class="kv"><span class="k">${t('scheduledUtc')}</span><span class="v">${job.scheduled_at ? new Date(job.scheduled_at).toLocaleString() : '—'}</span></div>
         <div class="kv"><span class="k">${t('repeat')}</span><span class="v">${formatRepeat(job)}</span></div>
+        ${job.node_name ? `<div class="kv"><span class="k">${t('nodeName')}</span><span class="v">${escapeHtml(job.node_name)}</span></div>` : ''}
+        ${job.host_mounts ? `<div class="kv"><span class="k">${t('hostMounts')}</span><span class="v"><code>${escapeHtml((JSON.parse(job.host_mounts) as {host:string;container:string}[]).map(m => `${m.host} → ${m.container}`).join(', '))}</code></span></div>` : ''}
         <div class="kv"><span class="k">${t('started')}</span><span class="v">${job.started_at ? new Date(job.started_at).toLocaleString() : '—'}</span></div>
         <div class="kv"><span class="k">${t('finished')}</span><span class="v">${job.finished_at ? new Date(job.finished_at).toLocaleString() : '—'}</span></div>
         <div class="kv"><span class="k">${t('outputs')}</span><span class="v">${job.output_count || 0} ${t('files')}</span></div>

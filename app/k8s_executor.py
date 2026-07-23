@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import secrets
 
@@ -16,6 +17,7 @@ RUNNER_IMAGE = os.environ.get(
 S3_SECRET = "ddp-s3-creds"
 BUCKET = "ddp"
 PROXY = os.environ.get("DDP_POD_PROXY", "http://172.16.50.3:7891")
+SHM_SIZE = os.environ.get("DDP_SHM_SIZE", "8Gi")
 
 _GPU_NODE_LABEL = "acceleratable.feature.gpustack.ai/nvidia"
 
@@ -66,6 +68,33 @@ class K8sExecutor:
     def _user_pvc(self, job: dict) -> str:
         return f"ddp-user-{job.get('user_id')}"
 
+    def _extra_volumes(self, job: dict) -> tuple[list, list]:
+        """shm (8Gi tmpfs) + user-declared hostPath mounts -> (volumes, mounts)."""
+        volumes = [
+            client.V1Volume(
+                name="dshm",
+                empty_dir=client.V1EmptyDirVolumeSource(
+                    medium="Memory", size_limit=SHM_SIZE
+                ),
+            )
+        ]
+        mounts = [client.V1VolumeMount(name="dshm", mount_path="/dev/shm")]
+        for i, m in enumerate(json.loads(job.get("host_mounts") or "[]")):
+            name = f"host-{i}"
+            volumes.append(
+                client.V1Volume(
+                    name=name,
+                    host_path=client.V1HostPathVolumeSource(
+                        path=m["host"], type="Directory"
+                    ),
+                )
+            )
+            mounts.append(client.V1VolumeMount(name=name, mount_path=m["container"]))
+        return volumes, mounts
+
+    def list_nodes(self) -> list[str]:
+        return [n.metadata.name for n in self.core.list_node().items]
+
     # ── phase 1: debug environment ──────────────
 
     async def prepare(self, job: dict) -> dict:
@@ -81,7 +110,8 @@ class K8sExecutor:
         pvc_name = f"ddp-user-{job.get('user_id')}"
 
         # RWO binds to one node forever: existing PVC -> stick to its node;
-        # new PVC -> pick the node with the most free GPU memory.
+        # new PVC -> user's node_name if given, else the node with most free GPU mem.
+        node_name = (job.get("node_name") or "").strip() or None
         try:
             pvc_obj = await asyncio.to_thread(
                 self.core.read_namespaced_persistent_volume_claim, pvc_name, NAMESPACE
@@ -89,23 +119,33 @@ class K8sExecutor:
             node = (pvc_obj.metadata.annotations or {}).get(
                 "volume.kubernetes.io/selected-node"
             )
-            node_selector = (
-                {"kubernetes.io/hostname": node} if node else {_GPU_NODE_LABEL: "true"}
-            )
+            if node and node_name and node_name != node:
+                raise ValueError(
+                    f"workspace is bound to node {node}; cannot schedule on {node_name}"
+                )
+            if node:
+                node_selector = {"kubernetes.io/hostname": node}
+            elif node_name:
+                node_selector = {"kubernetes.io/hostname": node_name}
+            else:
+                node_selector = {_GPU_NODE_LABEL: "true"}
         except ApiException as e:
             if e.status != 404:
                 raise
-            node_selector = {_GPU_NODE_LABEL: "true"}
-            try:
-                best = max(
-                    gpu.fetch_gpu_status(),
-                    key=lambda g: g["mem_total"] - g["mem_used"],
-                    default=None,
-                )
-                if best:
-                    node_selector = {"kubernetes.io/hostname": best["node"]}
-            except Exception:
-                pass
+            if node_name:
+                node_selector = {"kubernetes.io/hostname": node_name}
+            else:
+                node_selector = {_GPU_NODE_LABEL: "true"}
+                try:
+                    best = max(
+                        gpu.fetch_gpu_status(),
+                        key=lambda g: g["mem_total"] - g["mem_used"],
+                        default=None,
+                    )
+                    if best:
+                        node_selector = {"kubernetes.io/hostname": best["node"]}
+                except Exception:
+                    pass
             pvc = client.V1PersistentVolumeClaim(
                 metadata=client.V1ObjectMeta(
                     name=pvc_name,
@@ -122,6 +162,7 @@ class K8sExecutor:
             await asyncio.to_thread(
                 self.core.create_namespaced_persistent_volume_claim, NAMESPACE, pvc
             )
+        extra_vols, extra_mounts = self._extra_volumes(job)
         pod = client.V1Pod(
             metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE, labels=labels),
             spec=client.V1PodSpec(
@@ -157,7 +198,8 @@ class K8sExecutor:
                         volume_mounts=[
                             client.V1VolumeMount(
                                 name="workspace", mount_path="/workspace"
-                            )
+                            ),
+                            *extra_mounts,
                         ],
                     )
                 ],
@@ -167,7 +209,8 @@ class K8sExecutor:
                         persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
                             pvc_name
                         ),
-                    )
+                    ),
+                    *extra_vols,
                 ],
             ),
         )
@@ -235,6 +278,7 @@ class K8sExecutor:
     def _gpu_job(self, job: dict) -> client.V1Job:
         job_id = job["id"]
         name = self._name(job_id)
+        extra_vols, extra_mounts = self._extra_volumes(job)
         limits = {
             "cpu": str(job.get("cpu") or 2),
             "memory": f"{job.get('memory_gb') or 4}Gi",
@@ -266,19 +310,25 @@ class K8sExecutor:
                 limits=limits,
             ),
             volume_mounts=[
-                client.V1VolumeMount(name="workspace", mount_path="/workspace")
+                client.V1VolumeMount(name="workspace", mount_path="/workspace"),
+                *extra_mounts,
             ],
         )
+        node_name = (job.get("node_name") or "").strip() or None
         pod_spec = client.V1PodSpec(
             restart_policy="Never",
             containers=[container],
+            node_selector=(
+                {"kubernetes.io/hostname": node_name} if node_name else None
+            ),
             volumes=[
                 client.V1Volume(
                     name="workspace",
                     persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
                         self._user_pvc(job)
                     ),
-                )
+                ),
+                *extra_vols,
             ],
         )
         return client.V1Job(
@@ -479,6 +529,8 @@ class K8sExecutor:
                     "storage_gb": owner.get("storage_quota_override_gb")
                     or db.get_param("storage_default_quota_gb")
                     or 10,
+                    "node_name": job_snapshot.get("node_name"),
+                    "host_mounts": job_snapshot.get("host_mounts"),
                 }
             )
             # 守卫 2：prepare 是慢调用，期间用户可能已 cancel/delete；
